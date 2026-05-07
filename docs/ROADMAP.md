@@ -31,14 +31,32 @@ Following Erlang/OTP's proven design: supervisors link to children, trap exit si
 - `ActorRef::wait_exit()` and `ActorRef::exit_reason()` to observe why an actor stopped
 - Both tasks and threads modes
 
-### 3b. Links and Trap Exit — next
+### 3b. ChildHandle and ActorId — ✅ [PR #164](https://github.com/lambdaclass/spawned/pull/164)
 
-- **Bidirectional links** ([#131](https://github.com/lambdaclass/spawned/issues/131)) — linked actors die together (fate-sharing); supervisors trap exits to receive `Exit` messages instead
+- `ActorId` — unique identity key (Spawned's equivalent of Erlang's Pid, but kept internal)
+- `ChildHandle` — type-erased handle to a running actor; lets supervisors manage children of any actor type uniformly
+- `From<ActorRef<A>> for ChildHandle` works in both execution modes
+- `Context::id()` and `ActorRef::id()` accessors
+
+### 3c. Monitors — next
+
+Unidirectional actor observation. Used by supervisors and any actor that wants to observe a target's death without coupling lifetimes.
+
+- **`ctx.monitor(child_handle)`** → `MonitorRef`, delivers a `Down` message via `Handler<Down>` when the target stops
+- **`ctx.demonitor(monitor_ref)`** — cancel a monitor
+- Multiple independent monitors allowed between the same pair
+- Monitors don't affect the monitored actor
+
+### 3d. Links and Trap Exit
+
+Bidirectional fate-sharing. Used by supervisors and for peer actors that must always run together.
+
+- **Bidirectional links** ([#131](https://github.com/lambdaclass/spawned/issues/131)) — linked actors die together; supervisors trap exits to receive `Exit` messages instead
 - **Atomic `start_linked(ctx)`** — prevents race between spawn and link
 - **`ctx.trap_exit(true)`** — converts exit signals into `Exit` messages via `Handler<Exit>`
 - **Kill is untrappable** — `ExitReason::Kill` bypasses trap_exit
 
-### 3c. Child Specs and Supervisor
+### 3e. Child Specs and Supervisor
 
 - **Child specs** ([#132](https://github.com/lambdaclass/spawned/issues/132)) — factory pattern with restart type (`Permanent`, `Transient`, `Temporary`) and shutdown type (`BrutalKill`, `Timeout`, `Infinity`)
 - **Supervisor actor** ([#133](https://github.com/lambdaclass/spawned/issues/133)) — `start_linked()` + `trap_exit` + `Handler<Exit>`, with strategies: OneForOne, OneForAll, RestForOne
@@ -57,7 +75,6 @@ Following Erlang/OTP's proven design: supervisors link to children, trap exit si
 
 | Feature | Notes |
 |---------|-------|
-| Monitors | Unidirectional actor observation (lighter than links) |
 | Process groups (pg) | Erlang-style actor grouping |
 | Priority message channels | Signal > Stop > Supervision > Message |
 | State machines (`gen_statem`) | Protocol implementations |
@@ -70,3 +87,4 @@ Following Erlang/OTP's proven design: supervisors link to children, trap exit si
 - PR #153: v0.5 implementation
 - PR #154: Design research and framework comparison docs
 - PR #163: Exit reason tracking (Phase 3a)
+- PR #164: ChildHandle and ActorId (Phase 3b)
