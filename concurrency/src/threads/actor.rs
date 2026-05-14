@@ -345,15 +345,19 @@ impl<A: Actor> Context<A> {
             peer_signal,
         );
 
-        // If the target is already dead, deliver the signal immediately.
+        // If the target is already dead, we need to deliver the signal
+        // ourselves — but only if the target's own `propagate_exit` hasn't
+        // already done so. See the tasks-mode counterpart for the rationale.
         if let Some(reason) = target.exit_reason() {
-            let signal = link::make_signal(
-                self.trap_exit.clone(),
-                self.own_cancel_fn(),
-                self.own_send_exit_fn(),
-                self.linked_reason.clone(),
-            );
-            signal(target.id(), reason);
+            if link::take_self_from_peer_table(self.id, target.links()) {
+                let signal = link::make_signal(
+                    self.trap_exit.clone(),
+                    self.own_cancel_fn(),
+                    self.own_send_exit_fn(),
+                    self.linked_reason.clone(),
+                );
+                signal(target.id(), reason);
+            }
         }
     }
 
@@ -675,6 +679,10 @@ impl<A: Actor> ActorRef<A> {
         let _thread_handle = rt::spawn(move || {
             let mut guard = CompletionGuard {
                 completion,
+                // If run_actor panics at the thread boundary (escaping its
+                // internal catch_unwind), the guard's Drop fires with
+                // reason=None, which the guard converts to an abnormal exit
+                // reason. See CompletionGuard::drop.
                 reason: None,
             };
             let mut reason = run_actor(actor, ctx, rx, cancellation_token);
@@ -778,7 +786,13 @@ pub trait ActorStart: Actor {
         ActorRef::spawn(self)
     }
 
-    /// Atomically start the actor and link it to the caller's context.
+    /// Start the actor and link it to the caller's context.
+    ///
+    /// The link is registered immediately after the actor is spawned. This is
+    /// **not strictly atomic** — the child may begin executing `started()` and
+    /// process messages before the link is established. However, if the child
+    /// dies in that window, [`Context::link`] detects the dead target and
+    /// delivers the exit signal as a fallback, so no signal is lost.
     fn start_linked<P: Actor>(self, parent_ctx: &Context<P>) -> ActorRef<Self> {
         let actor_ref = self.start();
         parent_ctx.link(&actor_ref.child_handle());

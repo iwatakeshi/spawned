@@ -33,13 +33,13 @@ pub(crate) type SendExitFn = Arc<dyn Fn(Exit) -> Result<(), ActorError> + Send +
 /// Per-actor flag controlling how exit signals from linked actors are handled.
 /// `false` (default): the receiver is cancelled. `true`: the receiver gets an
 /// `Exit` message via `Actor::exit_received`.
-pub type TrapExitFlag = Arc<AtomicBool>;
+pub(crate) type TrapExitFlag = Arc<AtomicBool>;
 
 /// Per-actor slot holding the exit reason of a linked actor whose death
 /// triggered cancellation. When a non-trapping actor is cancelled by a link
 /// signal, this slot is set so the actor's own exit reason propagates
 /// transitively through further links.
-pub type LinkedExitReason = Arc<Mutex<Option<ExitReason>>>;
+pub(crate) type LinkedExitReason = Arc<Mutex<Option<ExitReason>>>;
 
 /// Create a new empty linked-exit-reason slot.
 pub(crate) fn new_linked_exit_reason() -> LinkedExitReason {
@@ -179,12 +179,22 @@ pub(crate) fn propagate_exit(own_id: ActorId, own_links: &LinkTable, reason: &Ex
     for entry in &entries {
         // Remove ourselves from the peer's link table so they don't try to
         // signal us back (we're dead).
-        if let Ok(mut peer_table) = entry.peer_links.lock() {
-            peer_table.retain(|e| e.peer_id != own_id);
-        }
+        let mut peer_table = entry.peer_links.lock().unwrap_or_else(|p| p.into_inner());
+        peer_table.retain(|e| e.peer_id != own_id);
+        drop(peer_table);
         // Deliver the exit signal to the peer.
         (entry.signal)(own_id, reason.clone());
     }
+}
+
+/// Atomically remove `own_id` from `peer_links`. Returns `true` if an entry
+/// was actually removed. Used by `ctx.link()` to detect whether the peer's
+/// `propagate_exit` has already drained the table.
+pub(crate) fn take_self_from_peer_table(own_id: ActorId, peer_links: &LinkTable) -> bool {
+    let mut table = peer_links.lock().unwrap_or_else(|p| p.into_inner());
+    let len_before = table.len();
+    table.retain(|e| e.peer_id != own_id);
+    len_before != table.len()
 }
 
 #[cfg(test)]
@@ -211,5 +221,31 @@ mod tests {
     fn trap_exit_flag_defaults_to_false() {
         let flag = new_trap_exit_flag();
         assert!(!flag.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn take_self_from_peer_table_returns_true_when_present() {
+        let peer_links = new_link_table();
+        let own_id = ActorId::next();
+        // Insert a fake entry for own_id
+        let dummy_signal: ExitSignalFn = Arc::new(|_, _| {});
+        peer_links.lock().unwrap().push(LinkEntry {
+            peer_id: own_id,
+            signal: dummy_signal,
+            peer_links: new_link_table(),
+        });
+        // First call: present, returns true and removes
+        assert!(take_self_from_peer_table(own_id, &peer_links));
+        // Second call: gone, returns false
+        assert!(!take_self_from_peer_table(own_id, &peer_links));
+        assert!(peer_links.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn take_self_from_peer_table_returns_false_when_absent() {
+        let peer_links = new_link_table();
+        let own_id = ActorId::next();
+        // Empty table — no entry for own_id
+        assert!(!take_self_from_peer_table(own_id, &peer_links));
     }
 }

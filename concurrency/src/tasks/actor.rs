@@ -392,15 +392,22 @@ impl<A: Actor> Context<A> {
             peer_signal,
         );
 
-        // If the target is already dead, deliver the signal immediately to us.
+        // If the target is already dead, we need to deliver the signal
+        // ourselves — but only if the target's own `propagate_exit` hasn't
+        // already done so. Atomically remove ourselves from the target's link
+        // table: if we removed an entry, the target hasn't drained yet (or
+        // hadn't yet seen our entry), so we deliver. If nothing was removed,
+        // the target already signaled us — don't double-deliver.
         if let Some(reason) = target.exit_reason() {
-            let signal = link::make_signal(
-                self.trap_exit.clone(),
-                self.own_cancel_fn(),
-                self.own_send_exit_fn(),
-                self.linked_reason.clone(),
-            );
-            signal(target.id(), reason);
+            if link::take_self_from_peer_table(self.id, target.links()) {
+                let signal = link::make_signal(
+                    self.trap_exit.clone(),
+                    self.own_cancel_fn(),
+                    self.own_send_exit_fn(),
+                    self.linked_reason.clone(),
+                );
+                signal(target.id(), reason);
+            }
         }
     }
 
@@ -822,11 +829,13 @@ pub trait ActorStart: Actor {
         ActorRef::spawn(self, backend)
     }
 
-    /// Atomically start the actor and link it to the caller's context.
+    /// Start the actor and link it to the caller's context.
     ///
-    /// The link is established before the new actor processes any messages,
-    /// closing the race window where a child could die before the parent's
-    /// `link()` call completes.
+    /// The link is registered immediately after the actor is spawned. This is
+    /// **not strictly atomic** — the child may begin executing `started()` and
+    /// process messages before the link is established. However, if the child
+    /// dies in that window, [`Context::link`] detects the dead target and
+    /// delivers the exit signal as a fallback, so no signal is lost.
     fn start_linked<P: Actor>(self, parent_ctx: &Context<P>) -> ActorRef<Self> {
         let actor_ref = self.start();
         parent_ctx.link(&actor_ref.child_handle());
@@ -2063,6 +2072,48 @@ mod tests {
             let ch = c.child_handle();
             ch.stop();
             ch.wait_exit_async().await;
+        });
+    }
+
+    #[test]
+    pub fn link_to_already_dead_delivers_exactly_once_to_trapping_peer() {
+        // Regression: previously, `ctx.link()` would deliver a duplicate Exit
+        // to trapping actors when the target died concurrently — once from
+        // propagate_exit (since register_link inserted self in target's table
+        // before target's drain ran) and once from the fallback exit_reason()
+        // check.
+        struct Boom7;
+        impl Message for Boom7 {
+            type Result = ();
+        }
+        impl Handler<Boom7> for TrapActor {
+            async fn handle(&mut self, _msg: Boom7, _ctx: &Context<Self>) {
+                panic!("boom7");
+            }
+        }
+
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let target = make_trapper(false);
+            // Kick off the panic
+            let _ = target.send(Boom7);
+            // Wait for target to fully die so exit_reason() is Some
+            target.wait_exit().await;
+
+            // Now link from a trapping observer — should receive Exit EXACTLY ONCE
+            let observer = make_trapper(true);
+            observer
+                .request(LinkTo(target.child_handle()))
+                .await
+                .unwrap();
+
+            rt::sleep(Duration::from_millis(100)).await;
+            let exits = observer.request(GetExits).await.unwrap();
+            assert_eq!(exits.len(), 1, "expected exactly one Exit, got {:?}", exits);
+
+            let oh = observer.child_handle();
+            oh.stop();
+            oh.wait_exit_async().await;
         });
     }
 
