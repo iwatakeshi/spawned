@@ -78,6 +78,7 @@
 
 pub mod child_handle;
 pub mod child_spec;
+pub mod dynamic_supervisor;
 pub mod error;
 pub(crate) mod exit_request;
 pub mod link;
@@ -94,6 +95,7 @@ pub use child_spec::{
     should_restart, shutdown_child_async, shutdown_child_blocking, ChildType,
     DEFAULT_WORKER_SHUTDOWN, RestartIntensity, RestartType, ShutdownType,
 };
+pub use dynamic_supervisor::{DynamicChildInfo, DynamicSupervisorError};
 pub use error::{ActorError, ExitReason};
 pub use link::Exit;
 pub use monitor::{Down, MonitorRef};
