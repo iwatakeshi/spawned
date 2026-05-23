@@ -22,7 +22,7 @@ Sources: issue #124, PRs #114, #146.
 | **Signal handling** | `send_message_on()` | Manual | Signal priority channel |
 | **Timers** | Built-in | Yes | `time` module |
 | **Named registry** | v0.5 | Yes | Erlang-style |
-| **Process groups (pg)** | Not yet | No | Erlang-style |
+| **Process groups (pg)** | Local MVP | No | Erlang-style (distributed deferred) |
 | **Links/Monitors** | Yes | No | Yes |
 | **RPC** | Not yet | No | Built-in |
 | **Multiple runtimes** | Tokio + none | Actix only | Tokio + async-std |
@@ -256,4 +256,4 @@ The reference model for actor frameworks.
 | Virtual actors | Orleans, Proto.Actor | Opt-in layer for future |
 | Persistence / event sourcing | Akka | Different problem domain |
 | WASM isolation | Lunatic | Too heavyweight |
-| Process groups (pg) | Erlang, Ractor | After supervision |
+| Process groups (pg) | Erlang, Ractor | Local MVP shipped; scopes/monitors/cluster deferred |

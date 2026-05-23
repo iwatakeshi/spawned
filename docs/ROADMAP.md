@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after Phase 3 supervision MVP and Phase 4 supervision guide.
+**Last updated:** after process groups MVP and Phase 4 supervision guide.
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -24,7 +24,7 @@ Solved the two critical API issues ([#144](https://github.com/lambdaclass/spawne
 
 ## Phase 3: Supervision Trees — ✅
 
-Target: **v1.0.0**. Core supervision is shipped including dynamic supervisors.
+Core supervision is shipped including dynamic supervisors.
 
 ### 3a. Exit Reasons — ✅ [PR #163](https://github.com/lambdaclass/spawned/pull/163)
 
@@ -56,6 +56,8 @@ Closes [#131](https://github.com/lambdaclass/spawned/issues/131) (monitor half w
 
 Closes [#132](https://github.com/lambdaclass/spawned/issues/132) and [#133](https://github.com/lambdaclass/spawned/issues/133) (MVP).
 
+**Shipped:**
+
 - **Child specs** — `RestartType`, `ShutdownType`, `ChildType`, `RestartIntensity`, `should_restart()`
 - **Supervisor actor** — `Supervisor::builder()` with `ChildSpec::worker()` / `ChildSpec::supervisor()`
 - **Restart strategies** — `OneForOne`, `OneForAll`, `RestForOne` (shared `SupervisorLogic`)
@@ -65,24 +67,57 @@ Closes [#132](https://github.com/lambdaclass/spawned/issues/132) and [#133](http
 - **Dynamic supervisor** ([#134](https://github.com/lambdaclass/spawned/issues/134)) — `DynamicSupervisor` for runtime OneForOne child pools
 - **Examples** — [`supervised_workers`](../examples/supervised_workers), [`dynamic_workers`](../examples/dynamic_workers)
 
-**Still open within 3e:** none (MVP complete)
+**Deferred from supervision MVP:**
+
+| Item | Notes |
+|------|-------|
+| **Exponential backoff** | Restarts are immediate; no built-in delay between attempts |
+| **OTP `Application` / root supervisor** | No single top-level application wrapper; compose supervisors manually |
+| **Supervisor-as-child hot code upgrade** | No built-in code reload or child spec migration |
+| **Interruptible shutdown** | `kill()` does not preempt an in-flight handler or `stopped()`; escalation waits for the actor to return to its loop |
+| **Dynamic supervisor strategies** | `DynamicSupervisor` is **OneForOne only** (Erlang `simple_one_for_one`); no OneForAll / RestForOne at runtime |
+| **Unified `ChildSpec` type** | Static and dynamic supervisors use separate `ChildSpec` types (`tasks::ChildSpec` vs `tasks::dynamic_supervisor::ChildSpec`) |
+| **Supervised process groups** | No automatic pg membership when starting children; join groups explicitly in `started()` |
 
 ### Other Phase 3 work
 
 - **Threads shutdown perf** — ✅ [PR #168](https://github.com/lambdaclass/spawned/pull/168), closes [#157](https://github.com/lambdaclass/spawned/issues/157): poison-pill `Shutdown` replaces 100ms `recv_timeout` polling in threads mode
 
-## Phase 4: Documentation & Polish — ongoing
+## Phase 4: Process Groups — ✅ (local MVP)
 
-- API Guide, migration guide, 17 examples
+Erlang/Ractor-style named actor sets for broadcast and dispatch on a **single node**.
+
+**Shipped:**
+
+- **`spawned_concurrency::pg`** — `join`, `leave`, `get_members`, `which_groups` via `ChildHandle`
+- **`tasks::pg` / `threads::pg`** — typed `join`, `leave`, `members` for `ActorRef<A>` dispatch
+- **Auto-leave on exit** — actors removed from all groups when they stop
+- **Refcounted joins** — multiple joins require matching `leave` calls
+- **Example** — [`pg_workers`](../examples/pg_workers)
+
+**Deferred from process groups MVP:**
+
+| Item | Notes |
+|------|-------|
+| **Scopes** | Erlang `pg` overlay networks (`join(scope, group, pid)`); only a default scope exists today |
+| **Group monitors** | No `monitor` / `demonitor` for membership change notifications (Ractor-style) |
+| **Distributed pg** | No cross-node membership; `get_local_members` is identical to `get_members` on one node |
+| **Built-in broadcast/call** | No `pg_cast` / `pg_call` helpers; iterate `members()` and send yourself |
+| **Supervisor integration** | Dynamic/static supervisors do not auto-join children to groups |
+
+## Phase 5: Documentation & Polish — ongoing
+
+- API Guide, migration guide, 18 examples
 - [Supervision guide](SUPERVISION.md) — static/dynamic supervisors, restart/shutdown, meltdown
 - Doc tests in crate READMEs ([#137](https://github.com/lambdaclass/spawned/issues/137)) — README examples tested via `cargo test --doc`
-- Release notes / v1.0 tag (remaining)
+- Process groups API reference in [API-GUIDE](API-GUIDE.md#process-groups)
 
-## Future Considerations (post-v1.0)
+## Future Considerations
 
 | Feature | Notes |
 |---------|-------|
-| Process groups (pg) | Erlang-style actor grouping |
+| pg scopes and group monitors | Deferred from local pg MVP (see above) |
+| Distributed process groups | Requires clustering first |
 | Priority message channels | Signal > Stop > Supervision > Message |
 | State machines (`gen_statem`) | Protocol implementations |
 | Backoff strategies | Built into supervision |
@@ -96,10 +131,11 @@ Closes [#132](https://github.com/lambdaclass/spawned/issues/132) and [#133](http
 | Feature | Status |
 |---------|--------|
 | Supervisor actor + child specs | ✅ Shipped |
-| Restart strategies (OneForOne/All/RestForOne) | ✅ Shipped |
+| Restart strategies (OneForOne/All/RestForOne) | ✅ Shipped (static supervisor) |
 | Meltdown protection | ✅ Shipped |
-| Dynamic supervisor | ✅ Shipped ([#134](https://github.com/lambdaclass/spawned/issues/134)) |
-| Process groups | ❌ Not started |
+| Dynamic supervisor (OneForOne pools) | ✅ Shipped ([#134](https://github.com/lambdaclass/spawned/issues/134)) |
+| Process groups (local) | ✅ Shipped (MVP) |
+| Process groups (distributed) | ❌ Deferred |
 | Distributed actors | ❌ Not started |
 
 ## References

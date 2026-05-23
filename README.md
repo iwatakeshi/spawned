@@ -187,7 +187,7 @@ spawned/
 │       └── threads/   # Sync implementation (OS threads)
 ├── macros/        # Proc macros (#[protocol], #[actor]) — re-exported by concurrency
 ├── rt/            # Runtime abstraction (wraps tokio, provides CancellationToken)
-└── examples/      # 17 usage examples
+└── examples/      # 18 usage examples
 ```
 
 Users depend only on `spawned-concurrency` (which re-exports the macros) and `spawned-rt`.
@@ -197,7 +197,7 @@ Users depend only on `spawned-concurrency` (which re-exports the macros) and `sp
 - [API Guide](docs/API-GUIDE.md) — reference for actors, protocols, supervision APIs
 - [Supervision Guide](docs/SUPERVISION.md) — when to use static vs dynamic supervisors, restart/shutdown semantics
 - [Migration Guide (0.5)](docs/MIGRATION-0.5.md) — upgrading from enum-based actors
-- [Roadmap](docs/ROADMAP.md)
+- [Roadmap](docs/ROADMAP.md) — shipped features and deferred items
 
 ## Rationale
 
@@ -209,7 +209,7 @@ Protocols make this separation explicit: the trait defines *what* an actor does,
 
 ## Roadmap
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the full roadmap. Phase 3 supervision is complete; see [docs/SUPERVISION.md](docs/SUPERVISION.md) for usage patterns.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for shipped features and deferred work. Phase 3 supervision and local process groups are complete; see [docs/SUPERVISION.md](docs/SUPERVISION.md) for supervision patterns.
 
 ## Inspiration
 

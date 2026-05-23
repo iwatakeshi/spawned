@@ -103,6 +103,8 @@ Tune intensity for crash-looping dependencies: too low causes unnecessary meltdo
 
 When the supervisor stops, `stopped()` runs with `suppress_restarts` set. Children are shut down in **reverse start order** using each spec's `ShutdownType`. Permanent children receive `ExitReason::Shutdown` and are not restarted.
 
+**Deferred from static supervisor MVP:** exponential backoff between restarts, OTP-style `Application` wrapper, and interruptible shutdown (see [ROADMAP](ROADMAP.md)).
+
 ## DynamicSupervisor
 
 For homogeneous pools started at runtime:
@@ -138,6 +140,35 @@ let handle = sup
 | `which_children()` | List ids, actor ids, policies |
 
 `terminate_child` removes the child from supervision before shutdown so crash/restart logic does not run.
+
+### Deferred (not in MVP)
+
+| Item | Workaround |
+|------|------------|
+| **OneForAll / RestForOne** | Use static `Supervisor` for batch restart trees; dynamic supervisor is OneForOne only |
+| **Separate `ChildSpec` type** | Import from `dynamic_supervisor::ChildSpec`, not the static supervisor module |
+| **Auto pg membership** | Call `tasks::pg::join` in the child's `started()` if the pool should be discoverable |
+| **Backoff between restarts** | Sleep in `started()` or wrap restarts in application logic |
+
+## Process groups
+
+Named sets of actors for broadcast and dispatch — complementary to supervision, not a replacement.
+
+```rust
+use spawned_concurrency::tasks::{pg, ActorStart as _};
+
+// In Worker::started()
+pg::join("handlers", &ctx.actor_ref());
+
+// Broadcast to all live members
+for worker in pg::members::<Worker>("handlers") {
+    worker.send(Ping)?;
+}
+```
+
+Actors auto-leave all groups on exit. See [API Guide — Process Groups](API-GUIDE.md#process-groups) and [`pg_workers`](../examples/pg_workers).
+
+**Deferred:** scopes, group membership monitors, distributed pg, built-in cast/call helpers. See [ROADMAP](ROADMAP.md).
 
 ## ChildHandle lifecycle
 
@@ -179,6 +210,7 @@ Use `should_restart(restart_type, &reason)` to preview policy outside a supervis
 |---------|--------------|
 | [`supervised_workers`](../examples/supervised_workers) | Static supervisor, OneForOne, restart policies |
 | [`dynamic_workers`](../examples/dynamic_workers) | Runtime pool, terminate, crash restart |
+| [`pg_workers`](../examples/pg_workers) | Process group join, broadcast, auto-leave on exit |
 | [`exit_reason`](../examples/exit_reason) Scenario 9 | Manual `trap_exit` + linking (pre-supervisor pattern) |
 
 ## Common pitfalls

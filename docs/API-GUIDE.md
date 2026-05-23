@@ -324,6 +324,77 @@ if let Some(ns) = ns {
 
 The registry uses `Any`-based downcasting, so `whereis` returns `None` if the stored type doesn't match the requested type.
 
+**Registry vs process groups:** The registry maps one name → one value. Process groups map one name → many actors. Use the registry for singleton services; use [`pg`](#process-groups) for pools you want to broadcast to or pick from at runtime.
+
+---
+
+## Process Groups
+
+Erlang-style named actor sets for broadcast and dispatch. Single-node MVP; see [deferred items](#deferred-not-in-mvp-1) below.
+
+```rust
+use spawned_concurrency::pg;                        // ChildHandle membership
+use spawned_concurrency::tasks::pg as tasks_pg;   // typed ActorRef dispatch
+```
+
+### Untyped membership (`spawned_concurrency::pg`)
+
+| Function | Description |
+|----------|-------------|
+| `pg::join(group, handle)` | Join a `ChildHandle` (refcounted) |
+| `pg::leave(group, id)` | Leave once; returns `PgError::NotJoined` if absent |
+| `pg::get_members(group)` | All live members as `ChildHandle` |
+| `pg::get_local_members(group)` | Same as `get_members` on a single node |
+| `pg::which_groups()` | Names of non-empty groups |
+
+### Typed dispatch (`tasks::pg` or `threads::pg`)
+
+| Function | Description |
+|----------|-------------|
+| `pg::join(group, &actor_ref)` | Join for later message dispatch |
+| `pg::leave::<A>(group, id)` | Decrement membership |
+| `pg::members::<A>(group)` | Live `ActorRef<A>` members |
+| `pg::local_members::<A>(group)` | Same as `members` on a single node |
+
+### Example
+
+```rust
+use spawned_concurrency::tasks::{pg, Actor, Context, Handler, ActorStart as _};
+use spawned_concurrency::message::Message;
+
+struct Ping;
+impl Message for Ping { type Result = (); }
+
+struct Worker;
+impl Actor for Worker {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        pg::join("pool", &ctx.actor_ref());
+    }
+}
+impl Handler<Ping> for Worker {
+    async fn handle(&mut self, _msg: Ping, _ctx: &Context<Self>) { /* ... */ }
+}
+
+// Broadcast
+for w in pg::members::<Worker>("pool") {
+    w.send(Ping)?;
+}
+```
+
+Actors are **automatically removed** from all groups when they exit. `DynamicSupervisor` optional registry names are separate from pg — join explicitly if needed.
+
+See [`pg_workers`](../examples/pg_workers).
+
+#### Deferred (not in MVP)
+
+| Item | Notes |
+|------|-------|
+| **Scopes** | Erlang overlay-network scopes; only a default scope today |
+| **Group monitors** | No notifications when membership changes |
+| **Distributed pg** | Cross-node membership requires clustering (not started) |
+| **Built-in broadcast/call** | No framework-level `pg_cast`; iterate `members()` yourself |
+| **Supervisor auto-join** | Starting a child does not add it to a process group |
+
 ---
 
 ## ChildHandle and ActorId
@@ -489,6 +560,8 @@ On supervisor shutdown, children are stopped in reverse start order using each s
 
 See the [`supervised_workers`](../examples/supervised_workers) example, [`dynamic_workers`](../examples/dynamic_workers), and the [Supervision Guide](SUPERVISION.md). Manual linking is shown in [`exit_reason`](../examples/exit_reason) Scenario 9.
 
+**Deferred from static supervisor MVP:** exponential backoff, OTP `Application` wrapper, interruptible shutdown. See [ROADMAP](ROADMAP.md).
+
 ### DynamicSupervisor
 
 For runtime child pools (Erlang `simple_one_for_one` style). Fixed **OneForOne** strategy; children are started via messages after the supervisor boots.
@@ -531,6 +604,15 @@ sup.terminate_child(handle.id()).await?;  // intentional remove — no restart
 `DynamicSupervisorError` covers `MaxChildrenExceeded`, `ChildNotFound`, `DuplicateChildId`, and registry failures.
 
 See [`dynamic_workers`](../examples/dynamic_workers).
+
+#### Deferred (not in MVP)
+
+| Item | Notes |
+|------|-------|
+| **Restart strategies** | OneForOne only; no OneForAll / RestForOne for runtime pools |
+| **Unified ChildSpec** | Uses `dynamic_supervisor::ChildSpec`, separate from static supervisor's `ChildSpec` |
+| **Backoff** | Immediate restart on crash; no exponential delay |
+| **Process group integration** | Children are not auto-joined to pg; call `pg::join` in `started()` |
 
 ## Response\<T\>
 
