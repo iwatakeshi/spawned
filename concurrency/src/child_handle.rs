@@ -1,6 +1,7 @@
 use crate::error::ExitReason;
+use crate::exit_request::RequestedExitReason;
 use crate::link::{LinkTable, LinkedExitReason, SendExitFn, TrapExitFlag};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,8 @@ pub struct ChildHandle {
     links: LinkTable,
     linked_reason: LinkedExitReason,
     send_exit: SendExitFn,
+    requested_exit: RequestedExitReason,
+    skip_stopped: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for ChildHandle {
@@ -87,6 +90,8 @@ impl ChildHandle {
         links: LinkTable,
         linked_reason: LinkedExitReason,
         send_exit: SendExitFn,
+        requested_exit: RequestedExitReason,
+        skip_stopped: Arc<AtomicBool>,
     ) -> Self {
         Self {
             id,
@@ -96,6 +101,8 @@ impl ChildHandle {
             links,
             linked_reason,
             send_exit,
+            requested_exit,
+            skip_stopped,
         }
     }
 
@@ -109,6 +116,8 @@ impl ChildHandle {
         links: LinkTable,
         linked_reason: LinkedExitReason,
         send_exit: SendExitFn,
+        requested_exit: RequestedExitReason,
+        skip_stopped: Arc<AtomicBool>,
     ) -> Self {
         Self {
             id,
@@ -118,6 +127,8 @@ impl ChildHandle {
             links,
             linked_reason,
             send_exit,
+            requested_exit,
+            skip_stopped,
         }
     }
 
@@ -137,6 +148,12 @@ impl ChildHandle {
     pub(crate) fn send_exit_fn(&self) -> &SendExitFn {
         &self.send_exit
     }
+    pub(crate) fn requested_exit_reason(&self) -> &RequestedExitReason {
+        &self.requested_exit
+    }
+    pub(crate) fn skip_stopped_flag(&self) -> &Arc<AtomicBool> {
+        &self.skip_stopped
+    }
 
     /// The actor's unique identity.
     pub fn id(&self) -> ActorId {
@@ -144,8 +161,28 @@ impl ChildHandle {
     }
 
     /// Signal the actor to stop. The actor will finish its current handler,
-    /// run `stopped()`, and exit.
+    /// run `stopped()`, and exit with [`ExitReason::Normal`].
     pub fn stop(&self) {
+        (self.cancel)();
+    }
+
+    /// Graceful supervisor-ordered shutdown. The actor exits with
+    /// [`ExitReason::Shutdown`] after `stopped()` completes.
+    pub fn shutdown(&self) {
+        *self
+            .requested_exit
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(ExitReason::Shutdown);
+        (self.cancel)();
+    }
+
+    /// Brutal kill — skips `stopped()` and exits with [`ExitReason::Kill`].
+    pub fn kill(&self) {
+        *self
+            .requested_exit
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(ExitReason::Kill);
+        self.skip_stopped.store(true, Ordering::Release);
         (self.cancel)();
     }
 
@@ -293,6 +330,7 @@ impl std::hash::Hash for ChildHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exit_request::{new_requested_exit_reason, new_skip_stopped_flag};
     use crate::link::{new_link_table, new_linked_exit_reason, new_trap_exit_flag};
 
     // Shared tasks-mode fixture: an Idler actor that does nothing and never
@@ -318,6 +356,8 @@ mod tests {
             new_link_table(),
             new_linked_exit_reason(),
             no_op_send_exit,
+            new_requested_exit_reason(),
+            new_skip_stopped_flag(),
         )
     }
 
@@ -391,6 +431,8 @@ mod tests {
             new_link_table(),
             new_linked_exit_reason(),
             no_op_send_exit.clone(),
+            new_requested_exit_reason(),
+            new_skip_stopped_flag(),
         );
         let h2 = ChildHandle::from_threads(
             id,
@@ -400,6 +442,8 @@ mod tests {
             new_link_table(),
             new_linked_exit_reason(),
             no_op_send_exit,
+            new_requested_exit_reason(),
+            new_skip_stopped_flag(),
         );
         assert_eq!(h1, h2);
     }
@@ -637,6 +681,36 @@ mod tests {
                 }
                 other => panic!("expected Panic, got {other:?}"),
             }
+        });
+    }
+
+    #[test]
+    fn child_handle_shutdown_produces_shutdown_reason() {
+        use crate::tasks::actor::ActorStart;
+        use tasks_fixtures::Idler;
+
+        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let actor = Idler.start();
+            let handle = actor.child_handle();
+            handle.shutdown();
+            let reason = handle.wait_exit_async().await;
+            assert_eq!(reason, ExitReason::Shutdown);
+        });
+    }
+
+    #[test]
+    fn child_handle_kill_produces_kill_reason() {
+        use crate::tasks::actor::ActorStart;
+        use tasks_fixtures::Idler;
+
+        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let actor = Idler.start();
+            let handle = actor.child_handle();
+            handle.kill();
+            let reason = handle.wait_exit_async().await;
+            assert_eq!(reason, ExitReason::Kill);
         });
     }
 }

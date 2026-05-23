@@ -1,5 +1,8 @@
 use crate::child_handle::{ActorId, ChildHandle};
 use crate::error::{panic_message, ActorError, ExitReason};
+use crate::exit_request::{
+    new_requested_exit_reason, new_skip_stopped_flag, resolve_exit_reason, RequestedExitReason,
+};
 use crate::link::{
     self, new_link_table, new_linked_exit_reason, new_trap_exit_flag, Exit, LinkTable,
     LinkedExitReason, SendExitFn, TrapExitFlag,
@@ -164,6 +167,8 @@ pub struct Context<A: Actor> {
     trap_exit: TrapExitFlag,
     links: LinkTable,
     linked_reason: LinkedExitReason,
+    requested_exit: RequestedExitReason,
+    skip_stopped: Arc<AtomicBool>,
 }
 
 impl<A: Actor> Clone for Context<A> {
@@ -177,6 +182,8 @@ impl<A: Actor> Clone for Context<A> {
             trap_exit: self.trap_exit.clone(),
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
+            requested_exit: self.requested_exit.clone(),
+            skip_stopped: self.skip_stopped.clone(),
         }
     }
 }
@@ -200,6 +207,8 @@ impl<A: Actor> Context<A> {
             trap_exit: actor_ref.trap_exit.clone(),
             links: actor_ref.links.clone(),
             linked_reason: actor_ref.linked_reason.clone(),
+            requested_exit: actor_ref.requested_exit.clone(),
+            skip_stopped: actor_ref.skip_stopped.clone(),
         }
     }
 
@@ -289,6 +298,8 @@ impl<A: Actor> Context<A> {
             trap_exit: self.trap_exit.clone(),
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
+            requested_exit: self.requested_exit.clone(),
+            skip_stopped: self.skip_stopped.clone(),
         }
     }
 
@@ -514,6 +525,8 @@ pub struct ActorRef<A: Actor> {
     trap_exit: TrapExitFlag,
     links: LinkTable,
     linked_reason: LinkedExitReason,
+    requested_exit: RequestedExitReason,
+    skip_stopped: Arc<AtomicBool>,
 }
 
 impl<A: Actor> Debug for ActorRef<A> {
@@ -533,6 +546,8 @@ impl<A: Actor> Clone for ActorRef<A> {
             trap_exit: self.trap_exit.clone(),
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
+            requested_exit: self.requested_exit.clone(),
+            skip_stopped: self.skip_stopped.clone(),
         }
     }
 }
@@ -657,6 +672,8 @@ impl<A: Actor> From<ActorRef<A>> for ChildHandle {
             actor_ref.links,
             actor_ref.linked_reason,
             send_exit,
+            actor_ref.requested_exit,
+            actor_ref.skip_stopped,
         )
     }
 }
@@ -689,6 +706,8 @@ impl<A: Actor> ActorRef<A> {
         let trap_exit = new_trap_exit_flag();
         let links = new_link_table();
         let linked_reason = new_linked_exit_reason();
+        let requested_exit = new_requested_exit_reason();
+        let skip_stopped = new_skip_stopped_flag();
 
         let actor_ref = ActorRef {
             id: ActorId::next(),
@@ -699,6 +718,8 @@ impl<A: Actor> ActorRef<A> {
             trap_exit: trap_exit.clone(),
             links: links.clone(),
             linked_reason: linked_reason.clone(),
+            requested_exit: requested_exit.clone(),
+            skip_stopped: skip_stopped.clone(),
         };
 
         let ctx = Context {
@@ -710,25 +731,22 @@ impl<A: Actor> ActorRef<A> {
             trap_exit,
             links: links.clone(),
             linked_reason: linked_reason.clone(),
+            requested_exit: requested_exit.clone(),
+            skip_stopped: skip_stopped.clone(),
         };
 
         let actor_id = actor_ref.id;
         let inner_future = async move {
-            let mut reason = run_actor(actor, ctx, rx, cancellation_token).await;
-            // If the actor was cancelled by a link signal (rather than
-            // ctx.stop()), use the linked reason as our exit reason so the
-            // death propagates transitively through further links.
-            if matches!(reason, ExitReason::Normal) {
-                if let Some(linked) = linked_reason
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .take()
-                {
-                    reason = linked;
-                }
-            }
-            // Propagate exit signal to linked actors before publishing the
-            // completion signal.
+            let reason = run_actor(
+                actor,
+                ctx,
+                rx,
+                cancellation_token,
+                requested_exit,
+                linked_reason,
+                skip_stopped,
+            )
+            .await;
             link::propagate_exit(actor_id, &links, &reason);
             let _ = completion_tx.send(Some(reason));
         };
@@ -756,6 +774,9 @@ async fn run_actor<A: Actor>(
     ctx: Context<A>,
     mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
+    requested_exit: RequestedExitReason,
+    linked_reason: LinkedExitReason,
+    skip_stopped: Arc<AtomicBool>,
 ) -> ExitReason {
     let start_result = AssertUnwindSafe(actor.started(&ctx)).catch_unwind().await;
     if let Err(panic) = start_result {
@@ -766,8 +787,10 @@ async fn run_actor<A: Actor>(
     }
 
     if cancellation_token.is_cancelled() {
-        let _ = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await;
-        return ExitReason::Normal;
+        if !skip_stopped.load(Ordering::Acquire) {
+            let _ = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await;
+        }
+        return resolve_exit_reason(ExitReason::Normal, &requested_exit, &linked_reason);
     }
 
     let mut exit_reason = ExitReason::Normal;
@@ -801,16 +824,18 @@ async fn run_actor<A: Actor>(
     }
 
     cancellation_token.cancel();
-    let stop_result = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await;
-    if let Err(panic) = stop_result {
-        let msg = panic_message(&*panic);
-        tracing::error!("Panic in stopped() callback: {msg}");
-        if !exit_reason.is_abnormal() {
-            exit_reason = ExitReason::Panic(format!("panic in stopped(): {msg}"));
+    if !skip_stopped.load(Ordering::Acquire) {
+        let stop_result = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await;
+        if let Err(panic) = stop_result {
+            let msg = panic_message(&*panic);
+            tracing::error!("Panic in stopped() callback: {msg}");
+            if !exit_reason.is_abnormal() {
+                exit_reason = ExitReason::Panic(format!("panic in stopped(): {msg}"));
+            }
         }
     }
 
-    exit_reason
+    resolve_exit_reason(exit_reason, &requested_exit, &linked_reason)
 }
 
 // ---------------------------------------------------------------------------

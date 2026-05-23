@@ -76,6 +76,7 @@
 
 pub mod child_handle;
 pub mod error;
+pub(crate) mod exit_request;
 pub mod link;
 pub mod message;
 pub mod monitor;
