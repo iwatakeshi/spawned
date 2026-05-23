@@ -192,13 +192,40 @@ let d = MyActor::new().start_with_backend_and_mailbox(
 
 **Depth semantics:** The counter tracks **queued** user messages only. When the actor dequeues a message (before the handler runs), depth decreases and blocked senders are woken. A message currently being handled does not count toward the limit.
 
-**System messages bypass limits:** `Exit` (link propagation) and `Shutdown` (cancellation) always enqueue immediately, even when the mailbox is full. Supervised actors started via `.start()` remain unbounded by default.
+**System messages bypass limits:** `Exit` (link propagation), stop items (cancellation), and OS signals always enqueue immediately, even when the user mailbox is full. Supervised actors started via `.start()` remain unbounded by default.
 
-**System-priority dequeue:** When both user and system channels have pending items, the actor processes system items first. A linked child death or cancellation therefore reaches a trapping supervisor before queued user messages are handled — even when the user mailbox is backlogged. User messages among themselves remain FIFO.
+**Priority dequeue:** When multiple internal channels have pending items, the actor processes them in order: **Signal → Stop → Supervision (Exit) → user messages**. Link-propagated exits and cancellation therefore reach a trapping supervisor before queued user messages — even under backlog. Stop beats supervision when both are queued. User messages among themselves remain FIFO.
 
 **Block mode in tasks mode:** Sync `send()` from within an async runtime uses `block_in_place` internally to wait for capacity. Prefer calling from a blocking thread or dedicated task when possible.
 
 **Observability:** `actor_ref.mailbox_depth()` returns the current queued depth; `actor_ref.mailbox_capacity()` returns `Some(n)` for bounded mailboxes or `None` when unbounded.
+
+---
+
+## Shutdown signals
+
+Register actors for OS shutdown (Ctrl+C / SIGTERM). Signals use the highest-priority mailbox channel and exit with [`ExitReason::Shutdown`](error/enum.ExitReason.html) — they are **not** delivered as user messages.
+
+**Tasks mode:**
+
+```rust
+use spawned_concurrency::tasks::spawn_shutdown_signal_dispatcher;
+use spawned_concurrency::{register_shutdown_on_signal, ChildHandle};
+
+spawn_shutdown_signal_dispatcher();
+
+let sup = MySupervisor::start();
+let _guards = register_shutdown_on_signal(&[sup.child_handle()]);
+
+// Or per-actor:
+let _guard = worker.shutdown_on_signal();
+```
+
+**Threads mode** — same API with `spawned_concurrency::threads::spawn_shutdown_signal_dispatcher`.
+
+The dispatcher listens once per process (`wait_shutdown_signal()` in `spawned_rt`) and fans out to all registered actors. [`SignalGuard`](shutdown_signal/struct.SignalGuard.html) deregisters on drop.
+
+**Do not use [`send_message_on`](#send_message_on) for OS shutdown** under load — `Shutdown` sent that way is a user message and can sit behind a deep mailbox backlog. Use `shutdown_on_signal()` or `register_shutdown_on_signal()` instead. Keep `send_message_on` for non-OS events (timers, I/O completion).
 
 ---
 
@@ -246,18 +273,18 @@ Timers are automatically cancelled when the actor stops.
 
 ## send_message_on
 
-Sends a message to an actor when an external event completes.
+Sends a message to an actor when an external event completes. Messages delivered this way use the **user** mailbox channel — they do **not** bypass backpressure or priority dequeue. For OS shutdown (Ctrl+C / SIGTERM), use [`shutdown_on_signal()`](#shutdown-signals) instead.
 
 **Tasks mode** — takes a `Future`:
 
 ```rust
 use spawned_concurrency::tasks::send_message_on;
 
-// Send Shutdown to the actor when ctrl_c resolves
-send_message_on(ctx, rt::ctrl_c(), Shutdown);
-
-// Send DataReady after an async operation completes
+// Timer / I/O completion — appropriate use of send_message_on
 send_message_on(ctx, fetch_data(), DataReady);
+
+// OS shutdown — prefer shutdown_on_signal() (see Shutdown signals section)
+// send_message_on(ctx, rt::ctrl_c(), Shutdown);  // not recommended under load
 ```
 
 **Threads mode** — takes a `FnOnce()` closure:
@@ -815,7 +842,9 @@ Wraps tokio primitives:
 | `mpsc` | Multi-producer, single-consumer channel |
 | `oneshot` | Single-use channel |
 | `watch` | Watch channel for broadcasting state changes |
-| `ctrl_c()` | Returns a future that resolves on Ctrl+C |
+| `ctrl_c()` | Returns a future that resolves on Ctrl+C (backward compatible) |
+| `wait_shutdown_signal()` | Returns a future that resolves on Ctrl+C or SIGTERM (`OsSignal`) |
+| `OsSignal` | `CtrlC` or `Terminate` (SIGTERM on Unix) |
 
 ### threads module (`spawned_rt::threads`)
 
@@ -832,6 +861,8 @@ Wraps standard library primitives:
 | `mpsc` | Multi-producer, single-consumer channel (wraps `std::sync::mpsc`) |
 | `oneshot` | Single-use channel (wraps `std::sync::mpsc`) |
 | `ctrl_c()` | Returns a closure that blocks until Ctrl+C. Supports multiple subscribers. |
+| `wait_shutdown_signal()` | Blocks until Ctrl+C or SIGTERM; returns `OsSignal` |
+| `shutdown_signal_listener()` | Returns a closure for subscriber-style listening (returns `OsSignal`) |
 
 ### Choosing tasks vs threads
 

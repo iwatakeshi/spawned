@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 crossbeam-channel = "0.5"
+signal-hook = "0.3"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7.15" }
 tokio-stream = { version = "0.1.17", features = ["sync"] }

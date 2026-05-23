@@ -277,6 +277,7 @@ mod tests {
     fn dummy_handle() -> ChildHandle {
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let no_op_send_exit: crate::link::SendExitFn = Arc::new(|_| Ok(()));
+        let no_op_send_signal: crate::child_handle::SendSignalFn = Arc::new(|_| Ok(()));
         ChildHandle::from_threads(
             ActorId::next(),
             Arc::new(|| {}),
@@ -285,6 +286,7 @@ mod tests {
             new_link_table(),
             new_linked_exit_reason(),
             no_op_send_exit,
+            no_op_send_signal,
             new_requested_exit_reason(),
             new_skip_stopped_flag(),
         )

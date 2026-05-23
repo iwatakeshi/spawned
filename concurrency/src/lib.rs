@@ -42,6 +42,7 @@ pub mod monitor;
 pub mod pg;
 pub mod registry;
 pub mod response;
+pub mod shutdown_signal;
 pub mod supervisor;
 pub mod tasks;
 pub mod threads;
@@ -58,5 +59,10 @@ pub use mailbox::{BackpressureMode, MailboxConfig};
 pub use monitor::{Down, MonitorRef};
 pub use pg::PgError;
 pub use response::Response;
+pub use shutdown_signal::{
+    register_shutdown_on_signal, spawn_shutdown_signal_dispatcher_tasks,
+    spawn_shutdown_signal_dispatcher_threads, SignalGuard,
+};
 pub use spawned_macros::{actor, protocol};
+pub use spawned_rt::OsSignal;
 pub use supervisor::SupervisorStrategy;

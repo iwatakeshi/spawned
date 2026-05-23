@@ -54,7 +54,22 @@ Workers default to `Timeout(5s)` via `DEFAULT_WORKER_SHUTDOWN`. Use `.with_shutd
 
 For load-sensitive workers, cap mailbox depth with `.with_mailbox(MailboxConfig::bounded(n))` on the child spec (static or dynamic supervisor). Default remains unbounded; restarts inherit the spec's mailbox config.
 
-**Exit delivery priority:** Link-propagated `Exit` messages bypass user mailbox backpressure (Phase 6b) and are dequeued before queued user messages (Phase 6.3). Supervisors with `trap_exit(true)` see child deaths promptly even under load.
+**Exit delivery priority:** Link-propagated `Exit` messages bypass user mailbox backpressure (Phase 6b) and are dequeued before queued user messages. Stop/cancellation beats supervision exits when both are queued. OS signals (Ctrl+C / SIGTERM) use the highest-priority channel (Phase 7). Supervisors with `trap_exit(true)` see child deaths promptly even under load.
+
+### Root supervisor and OS signals
+
+Register the top-level supervisor (and any peers that should stop on Ctrl+C / SIGTERM):
+
+```rust
+use spawned_concurrency::tasks::spawn_shutdown_signal_dispatcher;
+use spawned_concurrency::register_shutdown_on_signal;
+
+spawn_shutdown_signal_dispatcher();
+let _guards = register_shutdown_on_signal(&[sup.child_handle()]);
+sup.join().await;
+```
+
+Registered actors receive a priority shutdown signal (`ExitReason::Shutdown`) without manual `ctrl_c()` orchestration. See [`http_workers`](../examples/http_workers) for a full example.
 
 ```rust
 use spawned_concurrency::MailboxConfig;

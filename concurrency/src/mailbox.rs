@@ -1,6 +1,7 @@
 use crate::error::ActorError;
 use crate::link::Exit;
 use spawned_rt::tasks::Notify;
+use spawned_rt::OsSignal;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -55,25 +56,16 @@ impl MailboxConfig {
     }
 }
 
-/// System-priority item on the actor system channel.
-#[derive(Debug, Clone)]
-pub(crate) enum SystemItem {
-    Exit(Exit),
-    Shutdown,
-}
-
-impl SystemItem {
-    fn into_mailbox_item<M>(self) -> MailboxItem<M> {
-        match self {
-            SystemItem::Exit(exit) => MailboxItem::Exit(exit),
-            SystemItem::Shutdown => MailboxItem::Shutdown,
-        }
-    }
+/// OS shutdown signal on the actor signal channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SignalItem {
+    OsShutdown(OsSignal),
 }
 
 /// Internal mailbox item used uniformly in both `tasks` and `threads` actor loops.
 pub(crate) enum MailboxItem<M> {
     Message(M),
+    Signal(OsSignal),
     Exit(Exit),
     Shutdown,
 }
@@ -87,14 +79,18 @@ pub(crate) enum MailboxRuntime {
 /// Cloneable send handles for an actor mailbox (tasks mode).
 pub(crate) struct TasksMailboxSender<M> {
     pub user: spawned_rt::tasks::mpsc::Sender<M>,
-    pub system: spawned_rt::tasks::mpsc::Sender<SystemItem>,
+    pub signal: spawned_rt::tasks::mpsc::Sender<SignalItem>,
+    pub stop: spawned_rt::tasks::mpsc::Sender<()>,
+    pub supervision: spawned_rt::tasks::mpsc::Sender<Exit>,
 }
 
 impl<M> Clone for TasksMailboxSender<M> {
     fn clone(&self) -> Self {
         Self {
             user: self.user.clone(),
-            system: self.system.clone(),
+            signal: self.signal.clone(),
+            stop: self.stop.clone(),
+            supervision: self.supervision.clone(),
         }
     }
 }
@@ -102,40 +98,97 @@ impl<M> Clone for TasksMailboxSender<M> {
 /// Receive side for an actor mailbox (tasks mode).
 pub(crate) struct TasksMailboxReceiver<M> {
     user: spawned_rt::tasks::mpsc::Receiver<M>,
-    system: spawned_rt::tasks::mpsc::Receiver<SystemItem>,
+    signal: spawned_rt::tasks::mpsc::Receiver<SignalItem>,
+    stop: spawned_rt::tasks::mpsc::Receiver<()>,
+    supervision: spawned_rt::tasks::mpsc::Receiver<Exit>,
     user_closed: bool,
-    system_closed: bool,
+    signal_closed: bool,
+    stop_closed: bool,
+    supervision_closed: bool,
 }
 
 impl<M> TasksMailboxReceiver<M> {
     pub fn channel() -> (TasksMailboxSender<M>, Self) {
         let (user_tx, user_rx) = spawned_rt::tasks::mpsc::channel();
-        let (system_tx, system_rx) = spawned_rt::tasks::mpsc::channel();
+        let (signal_tx, signal_rx) = spawned_rt::tasks::mpsc::channel();
+        let (stop_tx, stop_rx) = spawned_rt::tasks::mpsc::channel();
+        let (supervision_tx, supervision_rx) = spawned_rt::tasks::mpsc::channel();
         (
             TasksMailboxSender {
                 user: user_tx,
-                system: system_tx,
+                signal: signal_tx,
+                stop: stop_tx,
+                supervision: supervision_tx,
             },
             Self {
                 user: user_rx,
-                system: system_rx,
+                signal: signal_rx,
+                stop: stop_rx,
+                supervision: supervision_rx,
                 user_closed: false,
-                system_closed: false,
+                signal_closed: false,
+                stop_closed: false,
+                supervision_closed: false,
             },
         )
     }
 
     pub async fn recv(&mut self) -> Option<MailboxItem<M>> {
+        use spawned_rt::tasks::mpsc::TryRecvError;
+
         loop {
-            if self.system_closed && self.user_closed {
+            if self.signal_closed && self.stop_closed && self.supervision_closed && self.user_closed
+            {
                 return None;
             }
+
+            if !self.signal_closed {
+                match self.signal.try_recv() {
+                    Ok(SignalItem::OsShutdown(signal)) => return Some(MailboxItem::Signal(signal)),
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => self.signal_closed = true,
+                }
+            }
+            if !self.stop_closed {
+                match self.stop.try_recv() {
+                    Ok(()) => return Some(MailboxItem::Shutdown),
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => self.stop_closed = true,
+                }
+            }
+            if !self.supervision_closed {
+                match self.supervision.try_recv() {
+                    Ok(exit) => return Some(MailboxItem::Exit(exit)),
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => self.supervision_closed = true,
+                }
+            }
+            if !self.user_closed {
+                match self.user.try_recv() {
+                    Ok(item) => return Some(MailboxItem::Message(item)),
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => self.user_closed = true,
+                }
+            }
+
             spawned_rt::tasks::select! {
                 biased;
-                item = self.system.recv(), if !self.system_closed => {
+                item = self.signal.recv(), if !self.signal_closed => {
                     match item {
-                        Some(item) => return Some(item.into_mailbox_item()),
-                        None => self.system_closed = true,
+                        Some(SignalItem::OsShutdown(signal)) => return Some(MailboxItem::Signal(signal)),
+                        None => self.signal_closed = true,
+                    }
+                },
+                result = self.stop.recv(), if !self.stop_closed => {
+                    match result {
+                        Some(()) => return Some(MailboxItem::Shutdown),
+                        None => self.stop_closed = true,
+                    }
+                },
+                item = self.supervision.recv(), if !self.supervision_closed => {
+                    match item {
+                        Some(exit) => return Some(MailboxItem::Exit(exit)),
+                        None => self.supervision_closed = true,
                     }
                 },
                 item = self.user.recv(), if !self.user_closed => {
@@ -152,14 +205,18 @@ impl<M> TasksMailboxReceiver<M> {
 /// Cloneable send handles for an actor mailbox (threads mode).
 pub(crate) struct ThreadsMailboxSender<M> {
     pub user: spawned_rt::threads::crossbeam_channel::Sender<M>,
-    pub system: spawned_rt::threads::crossbeam_channel::Sender<SystemItem>,
+    pub signal: spawned_rt::threads::crossbeam_channel::Sender<SignalItem>,
+    pub stop: spawned_rt::threads::crossbeam_channel::Sender<()>,
+    pub supervision: spawned_rt::threads::crossbeam_channel::Sender<Exit>,
 }
 
 impl<M> Clone for ThreadsMailboxSender<M> {
     fn clone(&self) -> Self {
         Self {
             user: self.user.clone(),
-            system: self.system.clone(),
+            signal: self.signal.clone(),
+            stop: self.stop.clone(),
+            supervision: self.supervision.clone(),
         }
     }
 }
@@ -167,25 +224,37 @@ impl<M> Clone for ThreadsMailboxSender<M> {
 /// Receive side for an actor mailbox (threads mode).
 pub(crate) struct ThreadsMailboxReceiver<M> {
     user: spawned_rt::threads::crossbeam_channel::Receiver<M>,
-    system: spawned_rt::threads::crossbeam_channel::Receiver<SystemItem>,
+    signal: spawned_rt::threads::crossbeam_channel::Receiver<SignalItem>,
+    stop: spawned_rt::threads::crossbeam_channel::Receiver<()>,
+    supervision: spawned_rt::threads::crossbeam_channel::Receiver<Exit>,
     user_closed: bool,
-    system_closed: bool,
+    signal_closed: bool,
+    stop_closed: bool,
+    supervision_closed: bool,
 }
 
 impl<M> ThreadsMailboxReceiver<M> {
     pub fn channel() -> (ThreadsMailboxSender<M>, Self) {
         let (user_tx, user_rx) = spawned_rt::threads::crossbeam_channel::unbounded();
-        let (system_tx, system_rx) = spawned_rt::threads::crossbeam_channel::unbounded();
+        let (signal_tx, signal_rx) = spawned_rt::threads::crossbeam_channel::unbounded();
+        let (stop_tx, stop_rx) = spawned_rt::threads::crossbeam_channel::unbounded();
+        let (supervision_tx, supervision_rx) = spawned_rt::threads::crossbeam_channel::unbounded();
         (
             ThreadsMailboxSender {
                 user: user_tx,
-                system: system_tx,
+                signal: signal_tx,
+                stop: stop_tx,
+                supervision: supervision_tx,
             },
             Self {
                 user: user_rx,
-                system: system_rx,
+                signal: signal_rx,
+                stop: stop_rx,
+                supervision: supervision_rx,
                 user_closed: false,
-                system_closed: false,
+                signal_closed: false,
+                stop_closed: false,
+                supervision_closed: false,
             },
         )
     }
@@ -194,14 +263,30 @@ impl<M> ThreadsMailboxReceiver<M> {
         use spawned_rt::threads::crossbeam_channel::{select, TryRecvError};
 
         loop {
-            if self.system_closed && self.user_closed {
+            if self.signal_closed && self.stop_closed && self.supervision_closed && self.user_closed
+            {
                 return None;
             }
-            if !self.system_closed {
-                match self.system.try_recv() {
-                    Ok(item) => return Some(item.into_mailbox_item()),
+
+            if !self.signal_closed {
+                match self.signal.try_recv() {
+                    Ok(SignalItem::OsShutdown(signal)) => return Some(MailboxItem::Signal(signal)),
                     Err(TryRecvError::Empty) => {}
-                    Err(TryRecvError::Disconnected) => self.system_closed = true,
+                    Err(TryRecvError::Disconnected) => self.signal_closed = true,
+                }
+            }
+            if !self.stop_closed {
+                match self.stop.try_recv() {
+                    Ok(()) => return Some(MailboxItem::Shutdown),
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => self.stop_closed = true,
+                }
+            }
+            if !self.supervision_closed {
+                match self.supervision.try_recv() {
+                    Ok(exit) => return Some(MailboxItem::Exit(exit)),
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => self.supervision_closed = true,
                 }
             }
             if !self.user_closed {
@@ -211,14 +296,19 @@ impl<M> ThreadsMailboxReceiver<M> {
                     Err(TryRecvError::Disconnected) => self.user_closed = true,
                 }
             }
-            if self.system_closed && self.user_closed {
-                return None;
-            }
 
             select! {
-                recv(self.system) -> msg => match msg {
-                    Ok(item) => return Some(item.into_mailbox_item()),
-                    Err(_) => self.system_closed = true,
+                recv(self.signal) -> msg => match msg {
+                    Ok(SignalItem::OsShutdown(signal)) => return Some(MailboxItem::Signal(signal)),
+                    Err(_) => self.signal_closed = true,
+                },
+                recv(self.stop) -> msg => match msg {
+                    Ok(()) => return Some(MailboxItem::Shutdown),
+                    Err(_) => self.stop_closed = true,
+                },
+                recv(self.supervision) -> msg => match msg {
+                    Ok(exit) => return Some(MailboxItem::Exit(exit)),
+                    Err(_) => self.supervision_closed = true,
                 },
                 recv(self.user) -> msg => match msg {
                     Ok(item) => return Some(MailboxItem::Message(item)),
@@ -405,22 +495,60 @@ impl MailboxLimits {
         })
     }
 
-    /// Enqueue a system item; never subject to user limits.
-    pub fn send_system_threads(
+    /// Enqueue an OS shutdown signal; never subject to user limits.
+    pub fn send_signal_threads(
         &self,
-        sender: &spawned_rt::threads::crossbeam_channel::Sender<SystemItem>,
-        item: SystemItem,
+        sender: &spawned_rt::threads::crossbeam_channel::Sender<SignalItem>,
+        signal: OsSignal,
     ) -> Result<(), ActorError> {
-        sender.send(item).map_err(|_| ActorError::ActorStopped)
+        sender
+            .send(SignalItem::OsShutdown(signal))
+            .map_err(|_| ActorError::ActorStopped)
     }
 
-    /// Enqueue a system item; never subject to user limits.
-    pub fn send_system_tasks(
+    /// Enqueue an OS shutdown signal; never subject to user limits.
+    pub fn send_signal_tasks(
         &self,
-        sender: &spawned_rt::tasks::mpsc::Sender<SystemItem>,
-        item: SystemItem,
+        sender: &spawned_rt::tasks::mpsc::Sender<SignalItem>,
+        signal: OsSignal,
     ) -> Result<(), ActorError> {
-        sender.send(item).map_err(|_| ActorError::ActorStopped)
+        sender
+            .send(SignalItem::OsShutdown(signal))
+            .map_err(|_| ActorError::ActorStopped)
+    }
+
+    /// Enqueue a stop item; never subject to user limits.
+    pub fn send_stop_threads(
+        &self,
+        sender: &spawned_rt::threads::crossbeam_channel::Sender<()>,
+    ) -> Result<(), ActorError> {
+        sender.send(()).map_err(|_| ActorError::ActorStopped)
+    }
+
+    /// Enqueue a stop item; never subject to user limits.
+    pub fn send_stop_tasks(
+        &self,
+        sender: &spawned_rt::tasks::mpsc::Sender<()>,
+    ) -> Result<(), ActorError> {
+        sender.send(()).map_err(|_| ActorError::ActorStopped)
+    }
+
+    /// Enqueue a supervision exit; never subject to user limits.
+    pub fn send_supervision_threads(
+        &self,
+        sender: &spawned_rt::threads::crossbeam_channel::Sender<Exit>,
+        exit: Exit,
+    ) -> Result<(), ActorError> {
+        sender.send(exit).map_err(|_| ActorError::ActorStopped)
+    }
+
+    /// Enqueue a supervision exit; never subject to user limits.
+    pub fn send_supervision_tasks(
+        &self,
+        sender: &spawned_rt::tasks::mpsc::Sender<Exit>,
+        exit: Exit,
+    ) -> Result<(), ActorError> {
+        sender.send(exit).map_err(|_| ActorError::ActorStopped)
     }
 }
 
@@ -446,15 +574,43 @@ mod tests {
     }
 
     #[test]
-    fn threads_system_recv_before_user() {
-        let (tx, rx) = ThreadsMailboxReceiver::<u32>::channel();
+    fn threads_priority_signal_stop_supervision_user() {
+        let (tx, mut rx) = ThreadsMailboxReceiver::<u32>::channel();
         tx.user.send(1).unwrap();
         tx.user.send(2).unwrap();
-        tx.system.send(SystemItem::Shutdown).unwrap();
+        tx.supervision
+            .send(Exit {
+                from: crate::child_handle::ActorId::next(),
+                reason: crate::error::ExitReason::Normal,
+            })
+            .unwrap();
+        tx.stop.send(()).unwrap();
+        tx.signal
+            .send(SignalItem::OsShutdown(OsSignal::CtrlC))
+            .unwrap();
 
-        let mut rx = rx;
+        assert!(matches!(
+            rx.recv(),
+            Some(MailboxItem::Signal(OsSignal::CtrlC))
+        ));
         assert!(matches!(rx.recv(), Some(MailboxItem::Shutdown)));
+        assert!(matches!(rx.recv(), Some(MailboxItem::Exit(_))));
         assert!(matches!(rx.recv(), Some(MailboxItem::Message(1))));
         assert!(matches!(rx.recv(), Some(MailboxItem::Message(2))));
+    }
+
+    #[test]
+    fn threads_stop_before_supervision() {
+        let (tx, mut rx) = ThreadsMailboxReceiver::<u32>::channel();
+        tx.supervision
+            .send(Exit {
+                from: crate::child_handle::ActorId::next(),
+                reason: crate::error::ExitReason::Normal,
+            })
+            .unwrap();
+        tx.stop.send(()).unwrap();
+
+        assert!(matches!(rx.recv(), Some(MailboxItem::Shutdown)));
+        assert!(matches!(rx.recv(), Some(MailboxItem::Exit(_))));
     }
 }

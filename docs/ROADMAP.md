@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after priority system dequeue (Phase 6.3).
+**Last updated:** after signal priority shutdown (Phase 7).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -153,6 +153,18 @@ Split each actor mailbox into separate user and system channels so `Exit` and `S
 - **Priority receive** — tasks use biased `select!`; threads use crossbeam `try_recv` + `select!`
 - **No public API change** — priority is always on
 
+### 6e. Signal priority shutdown — ✅ (Phase 7)
+
+Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
+
+**Shipped:**
+
+- **Four internal channels** — `signal`, `stop`, `supervision`, `user` (replaces unified system channel from 6d)
+- **OS signals** — Ctrl+C + SIGTERM via `spawned_rt::OsSignal` and `wait_shutdown_signal()` (tasks + threads)
+- **Registration API** — `ActorRef::shutdown_on_signal()`, `ChildHandle::shutdown_on_signal()`, `register_shutdown_on_signal()`, `spawn_shutdown_signal_dispatcher()` (per mode)
+- **Signal → graceful shutdown** — OS signals map to `ExitReason::Shutdown` without a user-message round trip
+- **Examples** — [`http_workers`](../examples/http_workers), [`signal_test`](../examples/signal_test)
+
 **Deferred from production mailboxes:**
 
 | Item | Notes |
@@ -167,7 +179,7 @@ Split each actor mailbox into separate user and system channels so `Exit` and `S
 |---------|-------|
 | pg scopes and group monitors | Deferred from local pg MVP (see above) |
 | Distributed process groups | Requires clustering first |
-| Priority message channels | Signal > Stop > Supervision > Message (partial: Stop/Exit dequeue before user messages in 6d) |
+| Priority message channels | ✅ Shipped in Phase 7 (Signal > Stop > Supervision > Message) |
 | State machines (`gen_statem`) | Protocol implementations |
 | Backoff strategies | Built into supervision |
 | Persistence / event sourcing | Akka Persistence pattern |

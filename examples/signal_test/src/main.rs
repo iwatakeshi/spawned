@@ -1,8 +1,9 @@
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::tasks::{
-    send_interval, send_message_on, Actor, ActorStart as _, Backend, Context, Handler,
+    send_interval, spawn_shutdown_signal_dispatcher, Actor, ActorStart as _, Backend, Context,
+    Handler,
 };
-use spawned_concurrency::{actor, protocol};
+use spawned_concurrency::{actor, protocol, register_shutdown_on_signal};
 use spawned_rt::tasks::{self as rt, CancellationToken};
 use std::{env, time::Duration};
 
@@ -56,7 +57,7 @@ impl TickingActor {
 
     #[send_handler]
     async fn handle_shutdown(&mut self, _msg: Shutdown, ctx: &Context<Self>) {
-        tracing::info!("[{}] Received shutdown signal", self.name);
+        tracing::info!("[{}] Received shutdown message", self.name);
         ctx.stop();
     }
 }
@@ -67,7 +68,7 @@ fn main() {
 
     rt::run(async move {
         tracing::info!("Starting signal test with backend: {}", backend);
-        tracing::info!("Press Ctrl+C to test signal handling...");
+        tracing::info!("Press Ctrl+C or send SIGTERM to shut down...");
 
         let (actor1, actor2) = match backend {
             "async" => {
@@ -100,8 +101,13 @@ fn main() {
             }
         };
 
-        send_message_on(actor1.context(), rt::ctrl_c(), Shutdown);
-        send_message_on(actor2.context(), rt::ctrl_c(), Shutdown);
+        // OS shutdown signals use the priority signal channel (Signal > Stop > Exit > Message).
+        // They dequeue before queued user messages, unlike send_message_on(..., Shutdown).
+        spawn_shutdown_signal_dispatcher();
+        let _guards = register_shutdown_on_signal(&[actor1.child_handle(), actor2.child_handle()]);
+
+        // Legacy pattern (not recommended under load — Shutdown is a user message):
+        // send_message_on(actor1.context(), rt::ctrl_c(), Shutdown);
 
         actor1.join().await;
         actor2.join().await;

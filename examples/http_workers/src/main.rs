@@ -10,9 +10,9 @@ use spawned_concurrency::error::ActorError;
 use spawned_concurrency::message::Message;
 use spawned_concurrency::tasks::{
     Actor, Context, DynamicSupervisor, DynamicSupervisorApi, Handler,
-    dynamic_supervisor::ChildSpec, pg,
+    dynamic_supervisor::ChildSpec, pg, spawn_shutdown_signal_dispatcher,
 };
-use spawned_concurrency::{MailboxConfig, RestartType};
+use spawned_concurrency::{MailboxConfig, RestartType, register_shutdown_on_signal};
 use spawned_rt::tasks as rt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -153,7 +153,10 @@ fn main() {
         println!("  curl http://127.0.0.1:3000/stats");
         println!();
         println!("Burst POST /work to observe 503 when mailboxes fill.");
-        println!("Press Ctrl+C to stop.\n");
+        println!("Press Ctrl+C or send SIGTERM to stop.\n");
+
+        spawn_shutdown_signal_dispatcher();
+        let _signal_guards = register_shutdown_on_signal(&[sup.child_handle()]);
 
         rt::spawn(async move {
             if let Err(err) = axum::serve(listener, app).await {
@@ -161,9 +164,7 @@ fn main() {
             }
         });
 
-        rt::ctrl_c().await;
-        println!("\nShutting down...");
-        sup.child_handle().stop();
         sup.join().await;
+        println!("\nShutdown complete.");
     });
 }

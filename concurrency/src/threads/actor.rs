@@ -20,7 +20,7 @@ use crate::link::{
     LinkedExitReason, SendExitFn, TrapExitFlag,
 };
 use crate::mailbox::{
-    MailboxConfig, MailboxItem, MailboxLimits, MailboxRuntime, SystemItem, ThreadsMailboxReceiver,
+    MailboxConfig, MailboxItem, MailboxLimits, MailboxRuntime, ThreadsMailboxReceiver,
     ThreadsMailboxSender,
 };
 use crate::message::Message;
@@ -392,9 +392,9 @@ impl<A: Actor> Context<A> {
 
     /// Build a type-erased `SendExitFn` that enqueues an `Exit` mailbox item.
     fn own_send_exit_fn(&self) -> SendExitFn {
-        let system = self.mailbox.system.clone();
+        let supervision = self.mailbox.supervision.clone();
         let limits = self.mailbox_limits.clone();
-        Arc::new(move |exit: Exit| limits.send_system_threads(&system, SystemItem::Exit(exit)))
+        Arc::new(move |exit: Exit| limits.send_supervision_threads(&supervision, exit))
     }
 
     pub(crate) fn cancellation_token(&self) -> CancellationToken {
@@ -620,14 +620,27 @@ impl<A: Actor> ActorRef<A> {
     pub fn child_handle(&self) -> ChildHandle {
         ChildHandle::from(self.clone())
     }
+
+    /// Register this actor for OS shutdown signals (Ctrl+C / SIGTERM).
+    pub fn shutdown_on_signal(&self) -> crate::shutdown_signal::SignalGuard {
+        let signal = self.mailbox.signal.clone();
+        let limits = self.mailbox_limits.clone();
+        crate::shutdown_signal::register_shutdown_signal(
+            crate::shutdown_signal::make_threads_send_signal(limits, signal),
+        )
+    }
 }
 
 impl<A: Actor> From<ActorRef<A>> for ChildHandle {
     fn from(actor_ref: ActorRef<A>) -> Self {
-        let system = actor_ref.mailbox.system.clone();
+        let supervision = actor_ref.mailbox.supervision.clone();
         let limits = actor_ref.mailbox_limits.clone();
         let send_exit: SendExitFn =
-            Arc::new(move |exit: Exit| limits.send_system_threads(&system, SystemItem::Exit(exit)));
+            Arc::new(move |exit: Exit| limits.send_supervision_threads(&supervision, exit));
+        let signal = actor_ref.mailbox.signal.clone();
+        let limits_for_signal = actor_ref.mailbox_limits.clone();
+        let send_signal =
+            crate::shutdown_signal::make_threads_send_signal(limits_for_signal, signal);
         ChildHandle::from_threads(
             actor_ref.id,
             Arc::new(move || actor_ref.cancellation_token.cancel()),
@@ -636,6 +649,7 @@ impl<A: Actor> From<ActorRef<A>> for ChildHandle {
             actor_ref.links,
             actor_ref.linked_reason,
             send_exit,
+            send_signal,
             actor_ref.requested_exit,
             actor_ref.skip_stopped,
         )
@@ -666,10 +680,10 @@ impl<A: Actor> ActorRef<A> {
         let (mailbox_sender, rx) = ThreadsMailboxReceiver::<UserEnvelope<A>>::channel();
         let mailbox_limits = MailboxLimits::new(mailbox, MailboxRuntime::Threads);
         let cancellation_token = CancellationToken::new();
-        let system_shutdown = mailbox_sender.system.clone();
+        let stop_shutdown = mailbox_sender.stop.clone();
         let limits_shutdown = mailbox_limits.clone();
         cancellation_token.on_cancel(Box::new(move || {
-            let _ = limits_shutdown.send_system_threads(&system_shutdown, SystemItem::Shutdown);
+            let _ = limits_shutdown.send_stop_threads(&stop_shutdown);
         }));
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let id = ActorId::next();
@@ -791,6 +805,11 @@ fn run_actor<A: Actor>(
                     exit_reason = ExitReason::Panic(format!("panic in exit_received: {msg}"));
                     break;
                 }
+            }
+            MailboxItem::Signal(_signal) => {
+                *requested_exit.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some(ExitReason::Shutdown);
+                break;
             }
             MailboxItem::Shutdown => break,
         }
@@ -1462,6 +1481,13 @@ mod tests {
         type Result = ();
     }
 
+    fn inject_stop<A: Actor>(actor: &ActorRef<A>) {
+        actor
+            .mailbox_limits
+            .send_stop_threads(&actor.mailbox.stop)
+            .unwrap();
+    }
+
     struct Stoppable;
     impl Actor for Stoppable {}
     impl Handler<StopNow> for Stoppable {
@@ -1525,6 +1551,7 @@ mod tests {
         rt::sleep(Duration::from_millis(50));
 
         child.request(StopNow).unwrap();
+        rt::sleep(Duration::from_millis(50));
 
         {
             let (lock, cvar) = &*gate;
@@ -1737,6 +1764,7 @@ mod tests {
         assert!(matches!(actor.send(Ping), Err(ActorError::MailboxFull)));
 
         child.request(StopNow).unwrap();
+        rt::sleep(Duration::from_millis(50));
 
         {
             let (lock, cvar) = &*gate;
@@ -1774,6 +1802,7 @@ mod tests {
         actor.send(Ping).unwrap();
 
         child.request(StopNow).unwrap();
+        rt::sleep(Duration::from_millis(50));
 
         {
             let (lock, cvar) = &*gate;
@@ -1840,5 +1869,115 @@ mod tests {
         let handle = actor.child_handle();
         handle.stop();
         handle.wait_exit_blocking();
+    }
+
+    #[test]
+    fn signal_jumps_queued_user_messages_threads() {
+        use crate::shutdown_signal::dispatch_shutdown_signal;
+        use spawned_rt::OsSignal;
+
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let actor = FifoOrderActor {
+            order: order.clone(),
+            gate: gate.clone(),
+        }
+        .start();
+
+        actor.send(GatedWork).unwrap();
+        rt::sleep(Duration::from_millis(50));
+
+        actor.send(Ping).unwrap();
+        actor.send(Ping).unwrap();
+        actor.send(Ping).unwrap();
+
+        let _guard = actor.shutdown_on_signal();
+        dispatch_shutdown_signal(OsSignal::CtrlC);
+        rt::sleep(Duration::from_millis(50));
+
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+
+        let handle = actor.child_handle();
+        handle.wait_exit_blocking();
+
+        let recorded = order.lock().unwrap();
+        assert!(!recorded.contains(&"ping"));
+        assert_eq!(handle.exit_reason(), Some(ExitReason::Shutdown));
+    }
+
+    #[test]
+    fn stop_before_supervision_when_both_queued_threads() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let actor = FifoOrderActor {
+            order: order.clone(),
+            gate: gate.clone(),
+        }
+        .start();
+
+        let child = Stoppable.start();
+        actor.request(LinkChild(child.child_handle())).unwrap();
+
+        actor.send(GatedWork).unwrap();
+        rt::sleep(Duration::from_millis(50));
+
+        child.request(StopNow).unwrap();
+        rt::sleep(Duration::from_millis(50));
+
+        inject_stop(&actor);
+
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+
+        let handle = actor.child_handle();
+        handle.wait_exit_blocking();
+
+        let recorded = order.lock().unwrap();
+        assert!(!recorded.contains(&"exit"));
+    }
+
+    #[test]
+    fn signal_before_stop_and_user_threads() {
+        use crate::shutdown_signal::dispatch_shutdown_signal;
+        use spawned_rt::OsSignal;
+
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let actor = FifoOrderActor {
+            order: order.clone(),
+            gate: gate.clone(),
+        }
+        .start();
+
+        actor.send(GatedWork).unwrap();
+        rt::sleep(Duration::from_millis(50));
+
+        actor.send(Ping).unwrap();
+        actor.send(Ping).unwrap();
+
+        let _guard = actor.shutdown_on_signal();
+        inject_stop(&actor);
+        dispatch_shutdown_signal(OsSignal::Terminate);
+        rt::sleep(Duration::from_millis(50));
+
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+
+        let handle = actor.child_handle();
+        handle.wait_exit_blocking();
+
+        let recorded = order.lock().unwrap();
+        assert!(!recorded.contains(&"ping"));
+        assert_eq!(handle.exit_reason(), Some(ExitReason::Shutdown));
     }
 }

@@ -12,6 +12,7 @@ mod timer_tests;
 mod stream_tests;
 
 pub use crate::response::Response;
+pub use crate::shutdown_signal::spawn_shutdown_signal_dispatcher_threads as spawn_shutdown_signal_dispatcher;
 pub use actor::{
     request, send_message_on, Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient,
     DEFAULT_REQUEST_TIMEOUT,

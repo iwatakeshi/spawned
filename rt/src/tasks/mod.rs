@@ -40,3 +40,4 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
 }
 
 pub use crate::tasks::tokio::ctrl_c;
+pub use crate::tasks::tokio::wait_shutdown_signal;

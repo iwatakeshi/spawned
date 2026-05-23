@@ -5,6 +5,7 @@ pub mod oneshot;
 
 pub use crossbeam_channel;
 
+use crate::os_signal::OsSignal;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc as std_mpsc, Arc, Mutex, OnceLock,
@@ -16,8 +17,70 @@ pub use std::{
 
 use crate::{tasks::Runtime, tracing::init_tracing};
 
-/// Global list of Ctrl+C subscribers
-static CTRL_C_SUBSCRIBERS: OnceLock<Mutex<Vec<std_mpsc::Sender<()>>>> = OnceLock::new();
+/// Global list of shutdown signal subscribers (Ctrl+C and SIGTERM).
+static SHUTDOWN_SIGNAL_SUBSCRIBERS: OnceLock<Mutex<Vec<std_mpsc::Sender<OsSignal>>>> =
+    OnceLock::new();
+static SHUTDOWN_SIGNAL_HANDLERS_REGISTERED: AtomicBool = AtomicBool::new(false);
+
+fn register_shutdown_signal_handlers() {
+    if SHUTDOWN_SIGNAL_HANDLERS_REGISTERED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+
+    fn notify_subscribers(signal: OsSignal) {
+        if let Some(subs) = SHUTDOWN_SIGNAL_SUBSCRIBERS.get() {
+            let mut guard = subs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.retain(|tx| tx.send(signal).is_ok());
+        }
+    }
+
+    ctrlc::set_handler(move || notify_subscribers(OsSignal::CtrlC))
+        .expect("shutdown signal handler already set. Use shutdown_signal_listener() instead of ctrlc::set_handler()");
+
+    #[cfg(unix)]
+    {
+        use signal_hook::consts::SIGTERM;
+        let mut signals = signal_hook::iterator::Signals::new([SIGTERM])
+            .expect("failed to register SIGTERM handler");
+        std::thread::spawn(move || {
+            for sig in &mut signals {
+                if sig == SIGTERM {
+                    notify_subscribers(OsSignal::Terminate);
+                }
+            }
+        });
+    }
+}
+
+fn subscribe_shutdown_signal() -> std_mpsc::Receiver<OsSignal> {
+    register_shutdown_signal_handlers();
+    let subscribers = SHUTDOWN_SIGNAL_SUBSCRIBERS.get_or_init(|| Mutex::new(Vec::new()));
+    let (tx, rx) = std_mpsc::channel();
+    subscribers
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(tx);
+    rx
+}
+
+/// Returns a closure that blocks until an OS shutdown signal is received.
+pub fn shutdown_signal_listener() -> impl FnOnce() -> OsSignal + Send + 'static {
+    let rx = subscribe_shutdown_signal();
+    move || rx.recv().unwrap_or(OsSignal::CtrlC)
+}
+
+/// Returns a closure that blocks until Ctrl+C is received.
+///
+/// Multiple calls are supported — each returns a closure notified on Ctrl+C or SIGTERM.
+pub fn ctrl_c() -> impl FnOnce() + Send + 'static {
+    let listener = shutdown_signal_listener();
+    move || {
+        listener();
+    }
+}
 
 /// Initialize tracing and run the given function.
 pub fn run(f: fn()) {
@@ -107,44 +170,7 @@ impl CancellationToken {
     }
 }
 
-/// Returns a closure that blocks until Ctrl+C is received.
-///
-/// Multiple calls to this function are supported - each returns a closure that
-/// will be notified when Ctrl+C is pressed. This allows multiple actors to
-/// react to the same signal.
-///
-/// The signal handler is registered on the first call. Subsequent calls simply
-/// add new subscribers to the broadcast list.
-///
-/// # Example
-///
-/// ```ignore
-/// // Both actors will be notified on Ctrl+C
-/// send_message_on(actor1.clone(), rt::ctrl_c(), Msg::Shutdown);
-/// send_message_on(actor2.clone(), rt::ctrl_c(), Msg::Shutdown);
-/// ```
-pub fn ctrl_c() -> impl FnOnce() + Send + 'static {
-    // Initialize subscribers list and register handler on first call
-    let subscribers = CTRL_C_SUBSCRIBERS.get_or_init(|| {
-        ctrlc::set_handler(|| {
-            if let Some(subs) = CTRL_C_SUBSCRIBERS.get() {
-                let mut guard = subs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                // Notify all subscribers and remove dead ones (where receiver was dropped)
-                guard.retain(|tx| tx.send(()).is_ok());
-            }
-        })
-        .expect("Ctrl+C handler already set. Use ctrl_c() instead of ctrlc::set_handler()");
-        Mutex::new(Vec::new())
-    });
-
-    // Create a new subscriber channel
-    let (tx, rx) = std_mpsc::channel();
-    subscribers
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push(tx);
-
-    move || {
-        let _ = rx.recv();
-    }
+/// Wait for the next OS shutdown signal (blocking).
+pub fn wait_shutdown_signal() -> OsSignal {
+    shutdown_signal_listener()()
 }

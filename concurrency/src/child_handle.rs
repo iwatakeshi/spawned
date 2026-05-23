@@ -1,6 +1,8 @@
 use crate::error::ExitReason;
 use crate::exit_request::RequestedExitReason;
 use crate::link::{LinkTable, LinkedExitReason, SendExitFn, TrapExitFlag};
+use crate::shutdown_signal::SignalGuard;
+use spawned_rt::OsSignal;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -49,6 +51,10 @@ pub(crate) enum Completion {
 /// Type-erased cancel function. Wraps the mode-specific cancellation token.
 pub(crate) type CancelFn = Arc<dyn Fn() + Send + Sync>;
 
+/// Type-erased OS signal delivery function.
+pub(crate) type SendSignalFn =
+    Arc<dyn Fn(OsSignal) -> Result<(), crate::error::ActorError> + Send + Sync>;
+
 /// Type-erased handle to a running actor. Provides lifecycle operations
 /// (stop, liveness check, exit reason) without knowing the actor's concrete type.
 ///
@@ -68,6 +74,7 @@ pub struct ChildHandle {
     links: LinkTable,
     linked_reason: LinkedExitReason,
     send_exit: SendExitFn,
+    send_signal: SendSignalFn,
     requested_exit: RequestedExitReason,
     skip_stopped: Arc<AtomicBool>,
 }
@@ -91,6 +98,7 @@ impl ChildHandle {
         links: LinkTable,
         linked_reason: LinkedExitReason,
         send_exit: SendExitFn,
+        send_signal: SendSignalFn,
         requested_exit: RequestedExitReason,
         skip_stopped: Arc<AtomicBool>,
     ) -> Self {
@@ -102,6 +110,7 @@ impl ChildHandle {
             links,
             linked_reason,
             send_exit,
+            send_signal,
             requested_exit,
             skip_stopped,
         }
@@ -117,6 +126,7 @@ impl ChildHandle {
         links: LinkTable,
         linked_reason: LinkedExitReason,
         send_exit: SendExitFn,
+        send_signal: SendSignalFn,
         requested_exit: RequestedExitReason,
         skip_stopped: Arc<AtomicBool>,
     ) -> Self {
@@ -128,9 +138,15 @@ impl ChildHandle {
             links,
             linked_reason,
             send_exit,
+            send_signal,
             requested_exit,
             skip_stopped,
         }
+    }
+
+    /// Register this actor for OS shutdown signals (Ctrl+C / SIGTERM).
+    pub fn shutdown_on_signal(&self) -> SignalGuard {
+        crate::shutdown_signal::register_shutdown_signal(self.send_signal.clone())
     }
 
     /// Crate-internal accessors used by `ctx.link()` to wire up signal propagation.
@@ -431,6 +447,7 @@ mod tests {
         completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
     ) -> ChildHandle {
         let no_op_send_exit: SendExitFn = Arc::new(|_| Ok(()));
+        let no_op_send_signal: SendSignalFn = Arc::new(|_| Ok(()));
         ChildHandle::from_threads(
             ActorId::next(),
             cancel,
@@ -439,6 +456,7 @@ mod tests {
             new_link_table(),
             new_linked_exit_reason(),
             no_op_send_exit,
+            no_op_send_signal,
             new_requested_exit_reason(),
             new_skip_stopped_flag(),
         )
@@ -506,6 +524,7 @@ mod tests {
         });
         let id = ActorId::next();
         let no_op_send_exit: SendExitFn = Arc::new(|_| Ok(()));
+        let no_op_send_signal: SendSignalFn = Arc::new(|_| Ok(()));
         let h1 = ChildHandle::from_threads(
             id,
             cancel.clone(),
@@ -514,6 +533,7 @@ mod tests {
             new_link_table(),
             new_linked_exit_reason(),
             no_op_send_exit.clone(),
+            no_op_send_signal.clone(),
             new_requested_exit_reason(),
             new_skip_stopped_flag(),
         );
@@ -525,6 +545,7 @@ mod tests {
             new_link_table(),
             new_linked_exit_reason(),
             no_op_send_exit,
+            no_op_send_signal,
             new_requested_exit_reason(),
             new_skip_stopped_flag(),
         );

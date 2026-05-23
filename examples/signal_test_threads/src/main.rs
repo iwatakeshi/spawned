@@ -1,8 +1,8 @@
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::threads::{
-    send_interval, send_message_on, Actor, ActorStart as _, Context, Handler,
+    send_interval, spawn_shutdown_signal_dispatcher, Actor, ActorStart as _, Context, Handler,
 };
-use spawned_concurrency::{actor, protocol};
+use spawned_concurrency::{actor, protocol, register_shutdown_on_signal};
 use spawned_rt::threads::{self as rt, CancellationToken};
 use std::time::Duration;
 
@@ -56,7 +56,7 @@ impl TickingActor {
 
     #[send_handler]
     fn handle_shutdown(&mut self, _msg: Shutdown, ctx: &Context<Self>) {
-        tracing::info!("[{}] Received shutdown signal", self.name);
+        tracing::info!("[{}] Received shutdown message", self.name);
         ctx.stop();
     }
 }
@@ -64,13 +64,16 @@ impl TickingActor {
 fn main() {
     rt::run(|| {
         tracing::info!("Starting signal test for threads Actor");
-        tracing::info!("Press Ctrl+C to test signal handling...");
+        tracing::info!("Press Ctrl+C or send SIGTERM to shut down...");
 
         let actor1 = TickingActor::new("actor-1").start();
         let actor2 = TickingActor::new("actor-2").start();
 
-        send_message_on(actor1.context(), rt::ctrl_c(), Shutdown);
-        send_message_on(actor2.context(), rt::ctrl_c(), Shutdown);
+        spawn_shutdown_signal_dispatcher();
+        let _guards = register_shutdown_on_signal(&[actor1.child_handle(), actor2.child_handle()]);
+
+        // Legacy pattern (not recommended under load):
+        // send_message_on(actor1.context(), rt::ctrl_c(), Shutdown);
 
         actor1.join();
         actor2.join();
