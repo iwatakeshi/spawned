@@ -183,6 +183,16 @@ impl MailboxLimits {
         }
     }
 
+    /// Current number of queued user messages.
+    pub fn depth(&self) -> usize {
+        self.depth.load(Ordering::Acquire)
+    }
+
+    /// Configured mailbox capacity, or `None` when unbounded.
+    pub fn capacity(&self) -> Option<usize> {
+        self.capacity
+    }
+
     /// Called when a user message is dequeued (before the handler runs).
     pub fn on_message_dequeued(&self) {
         if self.capacity.is_none() {

@@ -52,13 +52,22 @@ Workers default to `Timeout(5s)` via `DEFAULT_WORKER_SHUTDOWN`. Use `.with_shutd
 
 **Escalation caveat:** `kill()` sets `skip_stopped` but does not interrupt an in-flight message handler or `stopped()` callback. The supervisor keeps waiting until the actor returns to its message loop.
 
+For load-sensitive workers, cap mailbox depth with `.with_mailbox(MailboxConfig::bounded(n))` on the child spec (static or dynamic supervisor). Default remains unbounded; restarts inherit the spec's mailbox config.
+
+```rust
+use spawned_concurrency::MailboxConfig;
+
+ChildSpec::worker("api", || ApiServer::new(), RestartType::Permanent)
+    .with_mailbox(MailboxConfig::bounded(64))
+```
+
 ### Start closure
 
 Child specs must start children **linked** to the supervisor:
 
 ```rust
 ChildSpec::worker("worker", || MyWorker::new(), RestartType::Permanent)
-// internally: start().start_linked(supervisor_ctx).child_handle()
+// internally: start_linked_with_mailbox(supervisor_ctx, spec.mailbox).child_handle()
 ```
 
 ## Static Supervisor

@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after mailbox buffer strategies (Phase 6.1).
+**Last updated:** after production mailboxes (Phase 6.2).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -113,7 +113,7 @@ Erlang/Ractor-style named actor sets for broadcast and dispatch on a **single no
 - Doc tests in crate READMEs ([#137](https://github.com/lambdaclass/spawned/issues/137)) — README examples tested via `cargo test --doc`
 - Process groups API reference in [API-GUIDE](API-GUIDE.md#process-groups)
 
-## Phase 6: Production Hardening — in progress
+## Phase 6: Production Hardening — ✅
 
 ### 6a. Unified mailbox channel — ✅
 
@@ -132,13 +132,23 @@ Configurable backpressure for user messages only; system items (`Exit`, `Shutdow
 - **Counter-based limits** — depth tracked on dequeue; no change to underlying unbounded mpsc channels
 - **API reference** — [Mailbox configuration](API-GUIDE.md#mailbox-configuration)
 
-**Deferred from buffer strategies MVP:**
+### 6c. Production mailboxes — ✅
+
+Wire bounded mailboxes into supervision and observability for load-safe dispatch.
+
+**Shipped:**
+
+- **`ActorRef::mailbox_depth()` / `mailbox_capacity()`** — runtime queue observability
+- **`ChildSpec::with_mailbox(config)`** — static + dynamic supervisors (tasks + threads)
+- **`start_linked_with_mailbox`** — linked child startup with mailbox policy
+- **Examples** — [`mailbox_backpressure`](../examples/mailbox_backpressure), [`http_workers`](../examples/http_workers)
+
+**Deferred from production mailboxes:**
 
 | Item | Notes |
 |------|-------|
+| **Default bounded mailbox for workers** | `ChildSpec::worker()` still defaults to unbounded; opt in via `.with_mailbox()` |
 | **Dropping / sliding buffers** | Only fixed capacity with fail-fast or block |
-| **Mailbox depth observability** | No `ActorRef::mailbox_depth()` yet |
-| **Supervisor defaults** | Supervised children still start with unbounded mailboxes |
 | **Priority reordering** | Stop/Exit share the channel FIFO with user messages |
 
 ## Future Considerations
@@ -152,7 +162,7 @@ Configurable backpressure for user messages only; system items (`Exit`, `Shutdow
 | Backoff strategies | Built into supervision |
 | Persistence / event sourcing | Akka Persistence pattern |
 | Clustering / distribution | `ractor_cluster` equivalent |
-| Built-in observability | Mailbox depth, message latency |
+| Built-in observability | Message latency (mailbox depth shipped in 6c) |
 | Custom runtime | Purpose-built actor runtime |
 
 ## What's still missing for OTP parity

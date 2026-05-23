@@ -9,6 +9,7 @@ use crate::child_spec::{
 };
 use crate::dynamic_supervisor::{instance_id, DynamicChildInfo, DynamicSupervisorError};
 use crate::link::Exit;
+use crate::mailbox::MailboxConfig;
 use crate::registry;
 use crate::response::Response;
 use crate::supervisor::{
@@ -17,7 +18,8 @@ use crate::supervisor::{
 
 use super::actor::{Actor, ActorRef, ActorStart, Context, Handler};
 
-type ChildStartFn = Arc<dyn Fn(&Context<DynamicSupervisor>) -> ChildHandle + Send + Sync>;
+type ChildStartFn =
+    Arc<dyn Fn(&Context<DynamicSupervisor>, MailboxConfig) -> ChildHandle + Send + Sync>;
 
 /// Specification for a dynamically started child in tasks mode.
 pub struct ChildSpec {
@@ -26,6 +28,7 @@ pub struct ChildSpec {
     pub restart: RestartType,
     pub shutdown: ShutdownType,
     pub child_type: ChildType,
+    pub mailbox: MailboxConfig,
 }
 
 impl Clone for ChildSpec {
@@ -36,6 +39,7 @@ impl Clone for ChildSpec {
             restart: self.restart,
             shutdown: self.shutdown,
             child_type: self.child_type,
+            mailbox: self.mailbox,
         }
     }
 }
@@ -48,10 +52,15 @@ impl ChildSpec {
     {
         Self {
             id: id.into(),
-            start: Arc::new(move |ctx| start().start_linked(ctx).child_handle()),
+            start: Arc::new(move |ctx, mailbox| {
+                start()
+                    .start_linked_with_mailbox(ctx, mailbox)
+                    .child_handle()
+            }),
             restart,
             shutdown: DEFAULT_WORKER_SHUTDOWN,
             child_type: ChildType::Worker,
+            mailbox: MailboxConfig::unbounded(),
         }
     }
 
@@ -62,16 +71,26 @@ impl ChildSpec {
     {
         Self {
             id: id.into(),
-            start: Arc::new(move |ctx| start().start_linked(ctx).child_handle()),
+            start: Arc::new(move |ctx, mailbox| {
+                start()
+                    .start_linked_with_mailbox(ctx, mailbox)
+                    .child_handle()
+            }),
             restart,
             shutdown: ShutdownType::Infinity,
             child_type: ChildType::Supervisor,
+            mailbox: MailboxConfig::unbounded(),
         }
     }
 
     pub fn with_shutdown(mut self, shutdown: ShutdownType) -> Self {
         warn_supervisor_timeout(self.child_type, shutdown);
         self.shutdown = shutdown;
+        self
+    }
+
+    pub fn with_mailbox(mut self, mailbox: MailboxConfig) -> Self {
+        self.mailbox = mailbox;
         self
     }
 }
@@ -231,7 +250,7 @@ impl DynamicSupervisor {
         }
 
         let start_index = self.logic.next_start_index();
-        let handle = (spec.start)(ctx);
+        let handle = (spec.start)(ctx, spec.mailbox);
         self.logic.register_child(
             ChildPolicy {
                 id: child_id.clone(),
@@ -262,7 +281,7 @@ impl DynamicSupervisor {
         let Some(spec) = self.specs.get(child_id).cloned() else {
             return;
         };
-        let handle = (spec.start)(ctx);
+        let handle = (spec.start)(ctx, spec.mailbox);
         if let Some(old) = self.handles.get(child_id) {
             self.actor_to_id.remove(&old.id());
         }

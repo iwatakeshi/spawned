@@ -54,7 +54,7 @@ mod tasks {
     use super::*;
     use spawned_concurrency::tasks::{Actor, ActorStart, ChildSpec, Context, Handler, Supervisor};
     use spawned_rt::tasks as rt;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     struct CountingWorker {
         id: String,
@@ -569,6 +569,161 @@ mod tasks {
             sup.join().await;
         });
     }
+
+    struct GatedMailboxWorker {
+        gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        actor_ref: Arc<Mutex<Option<spawned_concurrency::tasks::ActorRef<GatedMailboxWorker>>>>,
+        generation: Arc<AtomicUsize>,
+    }
+
+    struct GatedInc;
+    impl spawned_concurrency::message::Message for GatedInc {
+        type Result = ();
+    }
+
+    struct MbPing;
+    impl spawned_concurrency::message::Message for MbPing {
+        type Result = ();
+    }
+
+    struct PanicNow;
+    impl spawned_concurrency::message::Message for PanicNow {
+        type Result = ();
+    }
+
+    impl Actor for GatedMailboxWorker {
+        async fn started(&mut self, ctx: &Context<Self>) {
+            self.generation.fetch_add(1, Ordering::SeqCst);
+            *self.actor_ref.lock().unwrap() = Some(ctx.actor_ref());
+        }
+    }
+
+    impl Handler<GatedInc> for GatedMailboxWorker {
+        async fn handle(&mut self, _msg: GatedInc, _ctx: &Context<Self>) {
+            let (lock, cvar) = &*self.gate;
+            let mut open = lock.lock().unwrap();
+            while !*open {
+                open = cvar.wait(open).unwrap();
+            }
+        }
+    }
+
+    impl Handler<MbPing> for GatedMailboxWorker {
+        async fn handle(&mut self, _msg: MbPing, _ctx: &Context<Self>) {}
+    }
+
+    impl Handler<PanicNow> for GatedMailboxWorker {
+        async fn handle(&mut self, _msg: PanicNow, _ctx: &Context<Self>) {
+            panic!("supervised worker panic");
+        }
+    }
+
+    fn gated_mailbox_worker(
+        gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        actor_ref: Arc<Mutex<Option<spawned_concurrency::tasks::ActorRef<GatedMailboxWorker>>>>,
+        generation: Arc<AtomicUsize>,
+    ) -> impl Fn() -> GatedMailboxWorker + Send + Sync + Clone {
+        move || GatedMailboxWorker {
+            gate: gate.clone(),
+            actor_ref: actor_ref.clone(),
+            generation: generation.clone(),
+        }
+    }
+
+    fn wait_for_worker_ref(
+        actor_ref: &Arc<Mutex<Option<spawned_concurrency::tasks::ActorRef<GatedMailboxWorker>>>>,
+    ) -> spawned_concurrency::tasks::ActorRef<GatedMailboxWorker> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if let Some(actor) = actor_ref.lock().unwrap().clone() {
+                return actor;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("worker actor ref not published");
+    }
+
+    #[test]
+    fn supervised_child_honors_child_spec_mailbox() {
+        use spawned_concurrency::error::ActorError;
+        use spawned_concurrency::MailboxConfig;
+
+        run(async {
+            let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+            let worker_ref = Arc::new(Mutex::new(None));
+            let generation = Arc::new(AtomicUsize::new(0));
+
+            let sup = Supervisor::builder()
+                .child(
+                    ChildSpec::worker(
+                        "gated",
+                        gated_mailbox_worker(gate.clone(), worker_ref.clone(), generation.clone()),
+                        RestartType::Permanent,
+                    )
+                    .with_mailbox(MailboxConfig::bounded(1)),
+                )
+                .start();
+
+            let actor = wait_for_worker_ref(&worker_ref);
+            actor.send(GatedInc).unwrap();
+            rt::sleep(Duration::from_millis(20)).await;
+            actor.send(MbPing).unwrap();
+            assert!(matches!(actor.send(MbPing), Err(ActorError::MailboxFull)));
+
+            {
+                let (lock, cvar) = &*gate;
+                *lock.lock().unwrap() = true;
+                cvar.notify_all();
+            }
+
+            sup.child_handle().stop();
+            sup.join().await;
+        });
+    }
+
+    #[test]
+    fn supervised_child_restart_preserves_mailbox() {
+        use spawned_concurrency::error::ActorError;
+        use spawned_concurrency::MailboxConfig;
+
+        run(async {
+            let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+            let worker_ref = Arc::new(Mutex::new(None));
+            let generation = Arc::new(AtomicUsize::new(0));
+
+            let sup = Supervisor::builder()
+                .child(
+                    ChildSpec::worker(
+                        "gated",
+                        gated_mailbox_worker(gate.clone(), worker_ref.clone(), generation.clone()),
+                        RestartType::Permanent,
+                    )
+                    .with_mailbox(MailboxConfig::bounded(1)),
+                )
+                .start();
+
+            let actor = wait_for_worker_ref(&worker_ref);
+            let _ = actor.request(PanicNow).await;
+            while generation.load(Ordering::SeqCst) < 2 {
+                rt::sleep(Duration::from_millis(10)).await;
+            }
+
+            let actor = wait_for_worker_ref(&worker_ref);
+            actor.send(GatedInc).unwrap();
+            rt::sleep(Duration::from_millis(20)).await;
+            actor.send(MbPing).unwrap();
+            assert!(matches!(actor.send(MbPing), Err(ActorError::MailboxFull)));
+
+            {
+                let (lock, cvar) = &*gate;
+                *lock.lock().unwrap() = true;
+                cvar.notify_all();
+            }
+
+            sup.child_handle().stop();
+            sup.join().await;
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -580,7 +735,7 @@ mod threads {
     use spawned_concurrency::threads::{
         Actor, ActorStart, ChildSpec, Context, Handler, Supervisor,
     };
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
 
     struct CountingWorker {
@@ -997,5 +1152,156 @@ mod threads {
         sup.join();
 
         assert!(stopped_ran.load(Ordering::SeqCst));
+    }
+
+    struct GatedMailboxWorker {
+        gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        actor_ref: Arc<Mutex<Option<spawned_concurrency::threads::ActorRef<GatedMailboxWorker>>>>,
+        generation: Arc<AtomicUsize>,
+    }
+
+    struct GatedInc;
+    impl spawned_concurrency::message::Message for GatedInc {
+        type Result = ();
+    }
+
+    struct MbPing;
+    impl spawned_concurrency::message::Message for MbPing {
+        type Result = ();
+    }
+
+    struct PanicNow;
+    impl spawned_concurrency::message::Message for PanicNow {
+        type Result = ();
+    }
+
+    impl Actor for GatedMailboxWorker {
+        fn started(&mut self, ctx: &Context<Self>) {
+            self.generation.fetch_add(1, Ordering::SeqCst);
+            *self.actor_ref.lock().unwrap() = Some(ctx.actor_ref());
+        }
+    }
+
+    impl Handler<GatedInc> for GatedMailboxWorker {
+        fn handle(&mut self, _msg: GatedInc, _ctx: &Context<Self>) {
+            let (lock, cvar) = &*self.gate;
+            let mut open = lock.lock().unwrap();
+            while !*open {
+                open = cvar.wait(open).unwrap();
+            }
+        }
+    }
+
+    impl Handler<MbPing> for GatedMailboxWorker {
+        fn handle(&mut self, _msg: MbPing, _ctx: &Context<Self>) {}
+    }
+
+    impl Handler<PanicNow> for GatedMailboxWorker {
+        fn handle(&mut self, _msg: PanicNow, _ctx: &Context<Self>) {
+            panic!("supervised worker panic");
+        }
+    }
+
+    fn gated_mailbox_worker(
+        gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        actor_ref: Arc<Mutex<Option<spawned_concurrency::threads::ActorRef<GatedMailboxWorker>>>>,
+        generation: Arc<AtomicUsize>,
+    ) -> impl Fn() -> GatedMailboxWorker + Send + Sync + Clone {
+        move || GatedMailboxWorker {
+            gate: gate.clone(),
+            actor_ref: actor_ref.clone(),
+            generation: generation.clone(),
+        }
+    }
+
+    fn wait_for_worker_ref(
+        actor_ref: &Arc<Mutex<Option<spawned_concurrency::threads::ActorRef<GatedMailboxWorker>>>>,
+    ) -> spawned_concurrency::threads::ActorRef<GatedMailboxWorker> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if let Some(actor) = actor_ref.lock().unwrap().clone() {
+                return actor;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("worker actor ref not published");
+    }
+
+    #[test]
+    fn supervised_child_honors_child_spec_mailbox() {
+        use spawned_concurrency::error::ActorError;
+        use spawned_concurrency::MailboxConfig;
+
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let worker_ref = Arc::new(Mutex::new(None));
+        let generation = Arc::new(AtomicUsize::new(0));
+
+        let sup = Supervisor::builder()
+            .child(
+                ChildSpec::worker(
+                    "gated",
+                    gated_mailbox_worker(gate.clone(), worker_ref.clone(), generation.clone()),
+                    RestartType::Permanent,
+                )
+                .with_mailbox(MailboxConfig::bounded(1)),
+            )
+            .start();
+
+        let actor = wait_for_worker_ref(&worker_ref);
+        actor.send(GatedInc).unwrap();
+        thread::sleep(Duration::from_millis(20));
+        actor.send(MbPing).unwrap();
+        assert!(matches!(actor.send(MbPing), Err(ActorError::MailboxFull)));
+
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+
+        sup.child_handle().stop();
+        sup.join();
+    }
+
+    #[test]
+    fn supervised_child_restart_preserves_mailbox() {
+        use spawned_concurrency::error::ActorError;
+        use spawned_concurrency::MailboxConfig;
+
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let worker_ref = Arc::new(Mutex::new(None));
+        let generation = Arc::new(AtomicUsize::new(0));
+
+        let sup = Supervisor::builder()
+            .child(
+                ChildSpec::worker(
+                    "gated",
+                    gated_mailbox_worker(gate.clone(), worker_ref.clone(), generation.clone()),
+                    RestartType::Permanent,
+                )
+                .with_mailbox(MailboxConfig::bounded(1)),
+            )
+            .start();
+
+        let actor = wait_for_worker_ref(&worker_ref);
+        let _ = actor.request(PanicNow);
+        while generation.load(Ordering::SeqCst) < 2 {
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let actor = wait_for_worker_ref(&worker_ref);
+        actor.send(GatedInc).unwrap();
+        thread::sleep(Duration::from_millis(20));
+        actor.send(MbPing).unwrap();
+        assert!(matches!(actor.send(MbPing), Err(ActorError::MailboxFull)));
+
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+
+        sup.child_handle().stop();
+        sup.join();
     }
 }

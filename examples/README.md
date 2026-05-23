@@ -20,5 +20,7 @@
 | [`updater_threads`](updater_threads) | threads | Updater, thread-based |
 | [`blocking_genserver`](blocking_genserver) | tasks | Backend comparison |
 | [`busy_genserver_warning`](busy_genserver_warning) | tasks | Blocking-operation warning |
+| [`mailbox_backpressure`](mailbox_backpressure) | tasks | Bounded mailboxes — fail-fast, block, system bypass |
+| [`http_workers`](http_workers) | tasks | Axum dispatch to bounded worker pool — 503 on overload |
 
 See [docs/ROADMAP.md](../docs/ROADMAP.md) for shipped features and deferred work.

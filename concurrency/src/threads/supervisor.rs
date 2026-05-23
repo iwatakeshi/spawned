@@ -8,13 +8,14 @@ use crate::child_spec::{
     ShutdownType, DEFAULT_WORKER_SHUTDOWN,
 };
 use crate::link::Exit;
+use crate::mailbox::MailboxConfig;
 use crate::supervisor::{
     ChildHandleSlot, ChildPolicy, SupervisorAction, SupervisorLogic, SupervisorStrategy,
 };
 
 use super::actor::{Actor, ActorRef, ActorStart, Context};
 
-type ChildStartFn = Arc<dyn Fn(&Context<Supervisor>) -> ChildHandle + Send + Sync>;
+type ChildStartFn = Arc<dyn Fn(&Context<Supervisor>, MailboxConfig) -> ChildHandle + Send + Sync>;
 
 /// Specification for a supervised child in threads mode.
 pub struct ChildSpec {
@@ -23,6 +24,7 @@ pub struct ChildSpec {
     pub restart: RestartType,
     pub shutdown: ShutdownType,
     pub child_type: ChildType,
+    pub mailbox: MailboxConfig,
 }
 
 impl Clone for ChildSpec {
@@ -33,6 +35,7 @@ impl Clone for ChildSpec {
             restart: self.restart,
             shutdown: self.shutdown,
             child_type: self.child_type,
+            mailbox: self.mailbox,
         }
     }
 }
@@ -45,10 +48,15 @@ impl ChildSpec {
     {
         Self {
             id: id.into(),
-            start: Arc::new(move |ctx| start().start_linked(ctx).child_handle()),
+            start: Arc::new(move |ctx, mailbox| {
+                start()
+                    .start_linked_with_mailbox(ctx, mailbox)
+                    .child_handle()
+            }),
             restart,
             shutdown: DEFAULT_WORKER_SHUTDOWN,
             child_type: ChildType::Worker,
+            mailbox: MailboxConfig::unbounded(),
         }
     }
 
@@ -59,16 +67,26 @@ impl ChildSpec {
     {
         Self {
             id: id.into(),
-            start: Arc::new(move |ctx| start().start_linked(ctx).child_handle()),
+            start: Arc::new(move |ctx, mailbox| {
+                start()
+                    .start_linked_with_mailbox(ctx, mailbox)
+                    .child_handle()
+            }),
             restart,
             shutdown: ShutdownType::Infinity,
             child_type: ChildType::Supervisor,
+            mailbox: MailboxConfig::unbounded(),
         }
     }
 
     pub fn with_shutdown(mut self, shutdown: ShutdownType) -> Self {
         warn_supervisor_timeout(self.child_type, shutdown);
         self.shutdown = shutdown;
+        self
+    }
+
+    pub fn with_mailbox(mut self, mailbox: MailboxConfig) -> Self {
+        self.mailbox = mailbox;
         self
     }
 }
@@ -131,7 +149,7 @@ impl Supervisor {
     }
 
     fn start_child(&mut self, ctx: &Context<Self>, spec: &ChildSpec, start_index: usize) {
-        let handle = (spec.start)(ctx);
+        let handle = (spec.start)(ctx, spec.mailbox);
         self.logic.register_child(
             ChildPolicy {
                 id: spec.id.clone(),
@@ -150,7 +168,7 @@ impl Supervisor {
         let Some(spec) = self.specs.iter().find(|spec| spec.id == child_id) else {
             return;
         };
-        let handle = (spec.start)(ctx);
+        let handle = (spec.start)(ctx, spec.mailbox);
         self.logic.replace_child_handle(
             child_id,
             ChildHandleSlot {

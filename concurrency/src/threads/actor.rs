@@ -603,6 +603,16 @@ impl<A: Actor> ActorRef<A> {
         self.id
     }
 
+    /// Current number of queued user messages.
+    pub fn mailbox_depth(&self) -> usize {
+        self.mailbox_limits.depth()
+    }
+
+    /// Configured mailbox capacity, or `None` when unbounded.
+    pub fn mailbox_capacity(&self) -> Option<usize> {
+        self.mailbox_limits.capacity()
+    }
+
     /// Get a type-erased `ChildHandle` for this actor.
     pub fn child_handle(&self) -> ChildHandle {
         ChildHandle::from(self.clone())
@@ -828,7 +838,16 @@ pub trait ActorStart: Actor {
     /// dies in that window, [`Context::link`] detects the dead target and
     /// delivers the exit signal as a fallback, so no signal is lost.
     fn start_linked<P: Actor>(self, parent_ctx: &Context<P>) -> ActorRef<Self> {
-        let actor_ref = self.start();
+        self.start_linked_with_mailbox(parent_ctx, MailboxConfig::unbounded())
+    }
+
+    /// Start the actor with a mailbox configuration and link it to the caller's context.
+    fn start_linked_with_mailbox<P: Actor>(
+        self,
+        parent_ctx: &Context<P>,
+        mailbox: MailboxConfig,
+    ) -> ActorRef<Self> {
+        let actor_ref = self.start_with_mailbox(mailbox);
         parent_ctx.link(&actor_ref.child_handle());
         actor_ref
     }
@@ -1654,6 +1673,41 @@ mod tests {
             cvar.notify_all();
         }
         assert!(sender.join().unwrap().is_ok());
+
+        let handle = actor.child_handle();
+        handle.stop();
+        handle.wait_exit_blocking();
+    }
+
+    #[test]
+    fn mailbox_capacity_unbounded_is_none_threads() {
+        let (counter, _gate) = make_gate_counter();
+        let actor = counter.start();
+        assert_eq!(actor.mailbox_capacity(), None);
+
+        let handle = actor.child_handle();
+        handle.stop();
+        handle.wait_exit_blocking();
+    }
+
+    #[test]
+    fn mailbox_depth_tracks_queued_messages_threads() {
+        let (counter, gate) = make_gate_counter();
+        let actor = counter.start_with_mailbox(MailboxConfig::bounded(2));
+        actor.send(GatedInc).unwrap();
+        rt::sleep(Duration::from_millis(20));
+        actor.send(Ping).unwrap();
+        actor.send(Ping).unwrap();
+        rt::sleep(Duration::from_millis(20));
+        assert_eq!(actor.mailbox_depth(), 2);
+
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+        rt::sleep(Duration::from_millis(100));
+        assert_eq!(actor.mailbox_depth(), 0);
 
         let handle = actor.child_handle();
         handle.stop();

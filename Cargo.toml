@@ -23,6 +23,8 @@ members = [
     "examples/supervised_workers",
     "examples/dynamic_workers",
     "examples/pg_workers",
+    "examples/mailbox_backpressure",
+    "examples/http_workers",
 ]
 
 [workspace.dependencies]

@@ -113,6 +113,8 @@ async fn handle_tick(&mut self, _msg: Tick, ctx: &Context<Self>) {
 | `actor_ref.request_raw(msg)` | Returns a raw oneshot receiver |
 | `actor_ref.recipient::<M>()` | Get a type-erased `Recipient<M>` |
 | `actor_ref.context()` | Get a `Context<A>` (for timer setup, etc.) |
+| `actor_ref.mailbox_depth()` | Queued user message count (0 when unbounded or empty) |
+| `actor_ref.mailbox_capacity()` | Configured limit, or `None` when unbounded |
 | `actor_ref.join()` | Wait until the actor has fully stopped (tasks: `.await`, threads: blocking) |
 
 ### Starting an actor
@@ -193,6 +195,8 @@ let d = MyActor::new().start_with_backend_and_mailbox(
 **System messages bypass limits:** `Exit` (link propagation) and `Shutdown` (cancellation) always enqueue immediately, even when the mailbox is full. Supervised actors started via `.start()` remain unbounded by default.
 
 **Block mode in tasks mode:** Sync `send()` from within an async runtime uses `block_in_place` internally to wait for capacity. Prefer calling from a blocking thread or dedicated task when possible.
+
+**Observability:** `actor_ref.mailbox_depth()` returns the current queued depth; `actor_ref.mailbox_capacity()` returns `Some(n)` for bounded mailboxes or `None` when unbounded.
 
 ---
 
@@ -574,6 +578,8 @@ use spawned_concurrency::{
 
 **OTP defaults:** `ChildSpec::worker()` uses `DEFAULT_WORKER_SHUTDOWN` (`Timeout(5s)`). Nested supervisors default to `ShutdownType::Infinity`. Override with `.with_shutdown(...)` when a child needs longer cleanup.
 
+**Mailbox limits:** Supervised children default to unbounded mailboxes. Use `.with_mailbox(MailboxConfig::bounded(n))` on `ChildSpec` (static or dynamic) to cap worker queue depth. Restarts inherit the spec's mailbox config. See [Mailbox configuration](#mailbox-configuration).
+
 ### Shutdown orchestration
 
 Shared helpers apply a `ShutdownType` and block until the child exits:
@@ -606,6 +612,8 @@ use std::time::Duration;
 let spec = ChildSpec::worker("worker1", || Worker::new(), RestartType::Permanent);
 // Default shutdown is Timeout(5s); use Infinity for long stopped() cleanup:
 let spec = spec.with_shutdown(ShutdownType::Infinity);
+// Bounded mailbox for load-sensitive workers:
+let spec = spec.with_mailbox(MailboxConfig::bounded(100));
 
 // Nested supervisor:
 let nested = ChildSpec::supervisor("sup", || inner_supervisor(), RestartType::Permanent);
