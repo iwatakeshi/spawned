@@ -21,6 +21,7 @@ use crate::link::{
     self, new_link_table, new_linked_exit_reason, new_trap_exit_flag, Exit, LinkTable,
     LinkedExitReason, SendExitFn, TrapExitFlag,
 };
+use crate::mailbox::MailboxItem;
 use crate::message::Message;
 use crate::monitor::{Down, MonitorRef};
 use crate::pg;
@@ -88,23 +89,6 @@ where
     }
 }
 
-/// System envelope that dispatches an `Exit` notification to the actor's
-/// `exit_received` callback. Does not require `Handler<Exit>` on the actor.
-struct ExitEnvelope {
-    exit: Exit,
-}
-
-impl<A: Actor> Envelope<A> for ExitEnvelope {
-    fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
-        actor.exit_received(self.exit, ctx);
-    }
-}
-
-enum MailboxItem<A> {
-    Message(Box<dyn Envelope<A> + Send>),
-    Shutdown,
-}
-
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
@@ -115,7 +99,7 @@ enum MailboxItem<A> {
 /// Clone is cheap — it clones the inner channel sender and cancellation token.
 pub struct Context<A: Actor> {
     id: ActorId,
-    sender: mpsc::Sender<MailboxItem<A>>,
+    sender: mpsc::Sender<MailboxItem<Box<dyn Envelope<A> + Send>>>,
     cancellation_token: CancellationToken,
     completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
     monitors: MonitorTable,
@@ -176,7 +160,6 @@ impl<A: Actor> Context<A> {
     /// `stopped()` is called and the actor exits.
     pub fn stop(&self) {
         self.cancellation_token.cancel();
-        let _ = self.sender.send(MailboxItem::Shutdown);
     }
 
     /// Send a fire-and-forget message to this actor.
@@ -399,21 +382,15 @@ impl<A: Actor> Context<A> {
     /// Build a type-erased cancel closure for this actor.
     fn own_cancel_fn(&self) -> Arc<dyn Fn() + Send + Sync> {
         let token = self.cancellation_token.clone();
-        let sender = self.sender.clone();
-        Arc::new(move || {
-            token.cancel();
-            let _ = sender.send(MailboxItem::Shutdown);
-        })
+        Arc::new(move || token.cancel())
     }
 
-    /// Build a type-erased `SendExitFn` that enqueues an `ExitEnvelope`
-    /// onto this actor's mailbox.
+    /// Build a type-erased `SendExitFn` that enqueues an `Exit` mailbox item.
     fn own_send_exit_fn(&self) -> SendExitFn {
         let sender = self.sender.clone();
         Arc::new(move |exit: Exit| {
-            let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
             sender
-                .send(MailboxItem::Message(envelope))
+                .send(MailboxItem::Exit(exit))
                 .map_err(|_| ActorError::ActorStopped)
         })
     }
@@ -496,7 +473,7 @@ impl Drop for CompletionGuard {
 /// or call [`Context::stop`] from within a handler.
 pub struct ActorRef<A: Actor> {
     id: ActorId,
-    sender: mpsc::Sender<MailboxItem<A>>,
+    sender: mpsc::Sender<MailboxItem<Box<dyn Envelope<A> + Send>>>,
     cancellation_token: CancellationToken,
     completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
     monitors: MonitorTable,
@@ -637,17 +614,13 @@ impl<A: Actor> From<ActorRef<A>> for ChildHandle {
     fn from(actor_ref: ActorRef<A>) -> Self {
         let sender = actor_ref.sender.clone();
         let send_exit: SendExitFn = Arc::new(move |exit: Exit| {
-            let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
             sender
-                .send(MailboxItem::Message(envelope))
+                .send(MailboxItem::Exit(exit))
                 .map_err(|_| ActorError::ActorStopped)
         });
         ChildHandle::from_threads(
             actor_ref.id,
-            Arc::new(move || {
-                actor_ref.cancellation_token.cancel();
-                let _ = actor_ref.sender.send(MailboxItem::Shutdown);
-            }),
+            Arc::new(move || actor_ref.cancellation_token.cancel()),
             actor_ref.completion,
             actor_ref.trap_exit,
             actor_ref.links,
@@ -680,8 +653,12 @@ where
 
 impl<A: Actor> ActorRef<A> {
     fn spawn(actor: A) -> Self {
-        let (tx, rx) = mpsc::channel::<MailboxItem<A>>();
+        let (tx, rx) = mpsc::channel::<MailboxItem<Box<dyn Envelope<A> + Send>>>();
         let cancellation_token = CancellationToken::new();
+        let tx_shutdown = tx.clone();
+        cancellation_token.on_cancel(Box::new(move || {
+            let _ = tx_shutdown.send(MailboxItem::Shutdown);
+        }));
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let id = ActorId::next();
         let monitors: MonitorTable = Arc::new(Mutex::new(HashMap::new()));
@@ -743,7 +720,7 @@ impl<A: Actor> ActorRef<A> {
 fn run_actor<A: Actor>(
     mut actor: A,
     ctx: Context<A>,
-    rx: mpsc::Receiver<MailboxItem<A>>,
+    rx: mpsc::Receiver<MailboxItem<Box<dyn Envelope<A> + Send>>>,
     cancellation_token: CancellationToken,
     requested_exit: RequestedExitReason,
     linked_reason: LinkedExitReason,
@@ -769,17 +746,12 @@ fn run_actor<A: Actor>(
     let mut exit_reason = ExitReason::Normal;
 
     loop {
-        let msg = match rx.recv() {
-            Ok(msg) => match msg {
-                MailboxItem::Message(envelope) => Some(envelope),
-                MailboxItem::Shutdown => {
-                    break;
-                }
-            },
-            Err(_) => None,
+        let item = match rx.recv() {
+            Ok(item) => item,
+            Err(_) => break,
         };
-        match msg {
-            Some(envelope) => {
+        match item {
+            MailboxItem::Message(envelope) => {
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     envelope.handle(&mut actor, &ctx);
                 }));
@@ -789,11 +761,22 @@ fn run_actor<A: Actor>(
                     exit_reason = ExitReason::Panic(format!("panic in handler: {msg}"));
                     break;
                 }
-                if cancellation_token.is_cancelled() {
+            }
+            MailboxItem::Exit(exit) => {
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    actor.exit_received(exit, &ctx);
+                }));
+                if let Err(panic) = result {
+                    let msg = panic_message(&*panic);
+                    tracing::error!("Panic in exit_received callback: {msg}");
+                    exit_reason = ExitReason::Panic(format!("panic in exit_received: {msg}"));
                     break;
                 }
             }
-            None => break,
+            MailboxItem::Shutdown => break,
+        }
+        if cancellation_token.is_cancelled() {
+            break;
         }
     }
 
@@ -1412,5 +1395,122 @@ mod tests {
         parent.wait_exit();
         let reason = child.wait_exit();
         assert!(matches!(reason, ExitReason::Panic(_)));
+    }
+
+    // --- MailboxItem regression tests (#169) ---
+
+    struct FifoOrderActor {
+        order: Arc<Mutex<Vec<&'static str>>>,
+        gate: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    struct GatedWork;
+    impl Message for GatedWork {
+        type Result = ();
+    }
+
+    struct LinkChild(crate::ChildHandle);
+    impl Message for LinkChild {
+        type Result = ();
+    }
+
+    struct GetOrder;
+    impl Message for GetOrder {
+        type Result = Vec<&'static str>;
+    }
+
+    struct StopNow;
+    impl Message for StopNow {
+        type Result = ();
+    }
+
+    struct Stoppable;
+    impl Actor for Stoppable {}
+    impl Handler<StopNow> for Stoppable {
+        fn handle(&mut self, _msg: StopNow, ctx: &Context<Self>) {
+            ctx.stop();
+        }
+    }
+
+    impl Actor for FifoOrderActor {
+        fn started(&mut self, ctx: &Context<Self>) {
+            ctx.trap_exit(true);
+        }
+        fn exit_received(&mut self, _exit: Exit, _ctx: &Context<Self>) {
+            self.order.lock().unwrap().push("exit");
+        }
+    }
+
+    impl Handler<GatedWork> for FifoOrderActor {
+        fn handle(&mut self, _msg: GatedWork, _ctx: &Context<Self>) {
+            let (lock, cvar) = &*self.gate;
+            let mut open = lock.lock().unwrap();
+            while !*open {
+                open = cvar.wait(open).unwrap();
+            }
+            self.order.lock().unwrap().push("msg");
+        }
+    }
+
+    impl Handler<LinkChild> for FifoOrderActor {
+        fn handle(&mut self, msg: LinkChild, ctx: &Context<Self>) {
+            ctx.link(&msg.0);
+        }
+    }
+
+    impl Handler<GetOrder> for FifoOrderActor {
+        fn handle(&mut self, _msg: GetOrder, _ctx: &Context<Self>) -> Vec<&'static str> {
+            self.order.lock().unwrap().clone()
+        }
+    }
+
+    #[test]
+    fn exit_and_message_fifo_ordering_threads() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let actor = FifoOrderActor {
+            order,
+            gate: gate.clone(),
+        }
+        .start();
+
+        let child = Stoppable.start();
+        actor.request(LinkChild(child.child_handle())).unwrap();
+
+        actor.send(GatedWork).unwrap();
+        rt::sleep(Duration::from_millis(50));
+
+        child.request(StopNow).unwrap();
+
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+
+        rt::sleep(Duration::from_millis(100));
+        let recorded = actor.request(GetOrder).unwrap();
+        assert_eq!(recorded, vec!["msg", "exit"]);
+
+        let handle = actor.child_handle();
+        handle.stop();
+        handle.wait_exit_blocking();
+    }
+
+    struct Idle;
+    impl Actor for Idle {}
+
+    #[test]
+    fn cancellation_token_wake_without_ctx_stop_threads() {
+        let actor = Idle.start();
+        let ctx = Context::from_ref(&actor);
+        let start = std::time::Instant::now();
+        ctx.cancellation_token().cancel();
+        actor.join();
+        assert!(
+            start.elapsed() < Duration::from_millis(50),
+            "join took {:?}, expected single-digit ms wake",
+            start.elapsed()
+        );
     }
 }

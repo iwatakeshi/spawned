@@ -36,6 +36,7 @@ pub mod dynamic_supervisor;
 pub mod error;
 pub(crate) mod exit_request;
 pub mod link;
+pub(crate) mod mailbox;
 pub mod message;
 pub mod monitor;
 pub mod pg;
