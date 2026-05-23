@@ -401,7 +401,9 @@ let child = Worker::new().start_linked(&ctx);
 
 ## Child Specs and Supervisor
 
-Built-in Erlang-style supervision. Shared policy types live in the crate root; `ChildSpec` and `Supervisor` are mode-specific (`tasks::` or `threads::`).
+Built-in Erlang-style supervision. See the [Supervision Guide](SUPERVISION.md) for patterns and pitfalls; this section is the API reference.
+
+Shared policy types live in the crate root; `ChildSpec` and `Supervisor` are mode-specific (`tasks::` or `threads::`).
 
 ### Shared types
 
@@ -485,7 +487,7 @@ The supervisor enables `trap_exit(true)` in `started()`, links each child via `s
 
 On supervisor shutdown, children are stopped in reverse start order using each spec's `ShutdownType`. Batch termination (OneForAll / RestForOne) waits for each child to exit before restarting survivors.
 
-See the [`supervised_workers`](../examples/supervised_workers) example and the manual supervisor pattern in [`exit_reason`](../examples/exit_reason) Scenario 9.
+See the [`supervised_workers`](../examples/supervised_workers) example, [`dynamic_workers`](../examples/dynamic_workers), and the [Supervision Guide](SUPERVISION.md). Manual linking is shown in [`exit_reason`](../examples/exit_reason) Scenario 9.
 
 ### DynamicSupervisor
 

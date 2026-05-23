@@ -1,8 +1,8 @@
 # Spawned Roadmap
 
-**Last updated:** after child specs, Supervisor actor, and `supervised_workers` example.
+**Last updated:** after Phase 3 supervision MVP and Phase 4 supervision guide.
 
-For API details, see the [API Guide](API-GUIDE.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
+For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
 ## Phase 1: Core Actor Framework — ✅ v0.4
 
@@ -22,7 +22,7 @@ Solved the two critical API issues ([#144](https://github.com/lambdaclass/spawne
 - `#[protocol]` and `#[actor]` macros
 - Named registry — global actor lookup by name
 
-## Phase 3: Supervision Trees — in progress
+## Phase 3: Supervision Trees — ✅
 
 Target: **v1.0.0**. Core supervision is shipped including dynamic supervisors.
 
@@ -73,9 +73,10 @@ Closes [#132](https://github.com/lambdaclass/spawned/issues/132) and [#133](http
 
 ## Phase 4: Documentation & Polish — ongoing
 
-- API Guide, migration guide, 16 examples
-- Supervision guide (partial — see API Guide Child Specs / Supervisor sections)
-- Doc tests in crate READMEs ([#137](https://github.com/lambdaclass/spawned/issues/137))
+- API Guide, migration guide, 17 examples
+- [Supervision guide](SUPERVISION.md) — static/dynamic supervisors, restart/shutdown, meltdown
+- Doc tests in crate READMEs ([#137](https://github.com/lambdaclass/spawned/issues/137)) — README examples tested via `cargo test --doc`
+- Release notes / v1.0 tag (remaining)
 
 ## Future Considerations (post-v1.0)
 

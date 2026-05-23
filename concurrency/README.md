@@ -2,7 +2,7 @@
 
 Actor framework for Rust, inspired by Erlang/OTP. Define protocols as traits, implement handlers on actors, and call methods directly on actor references.
 
-This crate is part of [spawned](https://github.com/lambdaclass/spawned). See the [workspace README](https://github.com/lambdaclass/spawned/blob/main/README.md) for a full overview and the [API Guide](https://github.com/lambdaclass/spawned/blob/main/docs/API-GUIDE.md) for detailed documentation.
+This crate is part of [spawned](https://github.com/lambdaclass/spawned). See the [workspace README](https://github.com/lambdaclass/spawned/blob/main/README.md) for a full overview, the [API Guide](https://github.com/lambdaclass/spawned/blob/main/docs/API-GUIDE.md) for reference documentation, and the [Supervision Guide](https://github.com/lambdaclass/spawned/blob/main/docs/SUPERVISION.md) for fault-tolerance patterns.
 
 ## Quick Example
 
@@ -42,6 +42,22 @@ fn main() {
     })
 }
 ```
+
+## Supervision
+
+Built-in Erlang-style supervisors for static trees and runtime child pools:
+
+```ignore
+use spawned_concurrency::tasks::{ChildSpec, Supervisor};
+use spawned_concurrency::{RestartType, SupervisorStrategy};
+
+let sup = Supervisor::builder()
+    .strategy(SupervisorStrategy::OneForOne)
+    .child(ChildSpec::worker("worker", || MyWorker::new(), RestartType::Permanent))
+    .start();
+```
+
+See the [Supervision Guide](https://github.com/lambdaclass/spawned/blob/main/docs/SUPERVISION.md) for restart strategies, shutdown escalation, meltdown, and when to use `DynamicSupervisor`.
 
 ## Two Execution Modes
 
