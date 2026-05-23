@@ -22,6 +22,7 @@ members = [
     "examples/exit_reason",
     "examples/supervised_workers",
     "examples/dynamic_workers",
+    "examples/pg_workers",
 ]
 
 [workspace.dependencies]

@@ -1,0 +1,11 @@
+[package]
+name = "pg_workers"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+spawned-concurrency = { workspace = true }
+spawned-rt = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
