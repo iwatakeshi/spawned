@@ -96,6 +96,11 @@ impl<A: Actor> Envelope<A> for ExitEnvelope {
     }
 }
 
+enum MailboxItem<A> {
+    Message(Box<dyn Envelope<A> + Send>),
+    Shutdown,
+}
+
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
@@ -106,7 +111,7 @@ impl<A: Actor> Envelope<A> for ExitEnvelope {
 /// Clone is cheap — it clones the inner channel sender and cancellation token.
 pub struct Context<A: Actor> {
     id: ActorId,
-    sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
+    sender: mpsc::Sender<MailboxItem<A>>,
     cancellation_token: CancellationToken,
     completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
     monitors: MonitorTable,
@@ -161,6 +166,7 @@ impl<A: Actor> Context<A> {
     /// `stopped()` is called and the actor exits.
     pub fn stop(&self) {
         self.cancellation_token.cancel();
+        let _ = self.sender.send(MailboxItem::Shutdown);
     }
 
     /// Send a fire-and-forget message to this actor.
@@ -171,7 +177,7 @@ impl<A: Actor> Context<A> {
     {
         let envelope = MessageEnvelope { msg, tx: None };
         self.sender
-            .send(Box::new(envelope))
+            .send(MailboxItem::Message(Box::new(envelope)))
             .map_err(|_| ActorError::ActorStopped)
     }
 
@@ -184,7 +190,7 @@ impl<A: Actor> Context<A> {
         let (tx, rx) = oneshot::channel();
         let envelope = MessageEnvelope { msg, tx: Some(tx) };
         self.sender
-            .send(Box::new(envelope))
+            .send(MailboxItem::Message(Box::new(envelope)))
             .map_err(|_| ActorError::ActorStopped)?;
         Ok(rx)
     }
@@ -381,7 +387,11 @@ impl<A: Actor> Context<A> {
     /// Build a type-erased cancel closure for this actor.
     fn own_cancel_fn(&self) -> Arc<dyn Fn() + Send + Sync> {
         let token = self.cancellation_token.clone();
-        Arc::new(move || token.cancel())
+        let sender = self.sender.clone();
+        Arc::new(move || {
+            token.cancel();
+            let _ = sender.send(MailboxItem::Shutdown);
+        })
     }
 
     /// Build a type-erased `SendExitFn` that enqueues an `ExitEnvelope`
@@ -390,7 +400,9 @@ impl<A: Actor> Context<A> {
         let sender = self.sender.clone();
         Arc::new(move |exit: Exit| {
             let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
-            sender.send(envelope).map_err(|_| ActorError::ActorStopped)
+            sender
+                .send(MailboxItem::Message(envelope))
+                .map_err(|_| ActorError::ActorStopped)
         })
     }
 
@@ -472,7 +484,7 @@ impl Drop for CompletionGuard {
 /// or call [`Context::stop`] from within a handler.
 pub struct ActorRef<A: Actor> {
     id: ActorId,
-    sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
+    sender: mpsc::Sender<MailboxItem<A>>,
     cancellation_token: CancellationToken,
     completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
     monitors: MonitorTable,
@@ -511,7 +523,7 @@ impl<A: Actor> ActorRef<A> {
     {
         let envelope = MessageEnvelope { msg, tx: None };
         self.sender
-            .send(Box::new(envelope))
+            .send(MailboxItem::Message(Box::new(envelope)))
             .map_err(|_| ActorError::ActorStopped)
     }
 
@@ -524,7 +536,7 @@ impl<A: Actor> ActorRef<A> {
         let (tx, rx) = oneshot::channel();
         let envelope = MessageEnvelope { msg, tx: Some(tx) };
         self.sender
-            .send(Box::new(envelope))
+            .send(MailboxItem::Message(Box::new(envelope)))
             .map_err(|_| ActorError::ActorStopped)?;
         Ok(rx)
     }
@@ -610,11 +622,16 @@ impl<A: Actor> From<ActorRef<A>> for ChildHandle {
         let sender = actor_ref.sender.clone();
         let send_exit: SendExitFn = Arc::new(move |exit: Exit| {
             let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
-            sender.send(envelope).map_err(|_| ActorError::ActorStopped)
+            sender
+                .send(MailboxItem::Message(envelope))
+                .map_err(|_| ActorError::ActorStopped)
         });
         ChildHandle::from_threads(
             actor_ref.id,
-            actor_ref.cancellation_token,
+            Arc::new(move || {
+                actor_ref.cancellation_token.cancel();
+                let _ = actor_ref.sender.send(MailboxItem::Shutdown);
+            }),
             actor_ref.completion,
             actor_ref.trap_exit,
             actor_ref.links,
@@ -645,7 +662,7 @@ where
 
 impl<A: Actor> ActorRef<A> {
     fn spawn(actor: A) -> Self {
-        let (tx, rx) = mpsc::channel::<Box<dyn Envelope<A> + Send>>();
+        let (tx, rx) = mpsc::channel::<MailboxItem<A>>();
         let cancellation_token = CancellationToken::new();
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let id = ActorId::next();
@@ -710,7 +727,7 @@ impl<A: Actor> ActorRef<A> {
 fn run_actor<A: Actor>(
     mut actor: A,
     ctx: Context<A>,
-    rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+    rx: mpsc::Receiver<MailboxItem<A>>,
     cancellation_token: CancellationToken,
 ) -> ExitReason {
     let start_result = catch_unwind(AssertUnwindSafe(|| {
@@ -731,15 +748,14 @@ fn run_actor<A: Actor>(
     let mut exit_reason = ExitReason::Normal;
 
     loop {
-        let msg = match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(msg) => Some(msg),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if cancellation_token.is_cancelled() {
+        let msg = match rx.recv() {
+            Ok(msg) => match msg {
+                MailboxItem::Message(envelope) => Some(envelope),
+                MailboxItem::Shutdown => {
                     break;
                 }
-                continue;
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
+            },
+            Err(_) => None,
         };
         match msg {
             Some(envelope) => {

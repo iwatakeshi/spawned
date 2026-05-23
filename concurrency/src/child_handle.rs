@@ -81,7 +81,7 @@ impl ChildHandle {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_tasks(
         id: ActorId,
-        cancellation_token: spawned_rt::tasks::CancellationToken,
+        cancel: CancelFn,
         completion_rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
         trap_exit: TrapExitFlag,
         links: LinkTable,
@@ -90,7 +90,7 @@ impl ChildHandle {
     ) -> Self {
         Self {
             id,
-            cancel: Arc::new(move || cancellation_token.cancel()),
+            cancel,
             completion: Completion::Tasks(completion_rx),
             trap_exit,
             links,
@@ -103,7 +103,7 @@ impl ChildHandle {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_threads(
         id: ActorId,
-        cancellation_token: spawned_rt::threads::CancellationToken,
+        cancel: CancelFn,
         completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
         trap_exit: TrapExitFlag,
         links: LinkTable,
@@ -112,7 +112,7 @@ impl ChildHandle {
     ) -> Self {
         Self {
             id,
-            cancel: Arc::new(move || cancellation_token.cancel()),
+            cancel,
             completion: Completion::Threads(completion),
             trap_exit,
             links,
@@ -306,13 +306,13 @@ mod tests {
     /// Build a threads-mode ChildHandle for unit tests that exercise only the
     /// ChildHandle surface (no real actor).
     fn test_handle(
-        token: spawned_rt::threads::CancellationToken,
+        cancel: CancelFn,
         completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
     ) -> ChildHandle {
         let no_op_send_exit: SendExitFn = Arc::new(|_| Ok(()));
         ChildHandle::from_threads(
             ActorId::next(),
-            token,
+            cancel,
             completion,
             new_trap_exit_flag(),
             new_link_table(),
@@ -339,7 +339,10 @@ mod tests {
     fn child_handle_from_threads_basics() {
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let token = spawned_rt::threads::CancellationToken::new();
-        let handle = test_handle(token, completion.clone());
+        let cancel = Arc::new(move || {
+            token.cancel();
+        });
+        let handle = test_handle(cancel, completion.clone());
 
         assert!(handle.is_alive());
         assert!(handle.exit_reason().is_none());
@@ -360,8 +363,12 @@ mod tests {
     fn child_handle_stop() {
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let token = spawned_rt::threads::CancellationToken::new();
+        let token_clone = token.clone();
+        let cancel = Arc::new(move || {
+            token_clone.cancel();
+        });
         assert!(!token.is_cancelled());
-        let handle = test_handle(token.clone(), completion);
+        let handle = test_handle(cancel, completion);
         handle.stop();
         assert!(token.is_cancelled());
     }
@@ -370,11 +377,15 @@ mod tests {
     fn child_handle_equality_by_id() {
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let token = spawned_rt::threads::CancellationToken::new();
+        let token_clone = token.clone();
+        let cancel = Arc::new(move || {
+            token_clone.cancel();
+        });
         let id = ActorId::next();
         let no_op_send_exit: SendExitFn = Arc::new(|_| Ok(()));
         let h1 = ChildHandle::from_threads(
             id,
-            token.clone(),
+            cancel.clone(),
             completion.clone(),
             new_trap_exit_flag(),
             new_link_table(),
@@ -383,7 +394,7 @@ mod tests {
         );
         let h2 = ChildHandle::from_threads(
             id,
-            token,
+            cancel,
             completion,
             new_trap_exit_flag(),
             new_link_table(),

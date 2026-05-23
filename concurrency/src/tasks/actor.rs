@@ -651,7 +651,7 @@ impl<A: Actor> From<ActorRef<A>> for ChildHandle {
         });
         ChildHandle::from_tasks(
             actor_ref.id,
-            actor_ref.cancellation_token,
+            Arc::new(move || actor_ref.cancellation_token.cancel()),
             actor_ref.completion_rx,
             actor_ref.trap_exit,
             actor_ref.links,
