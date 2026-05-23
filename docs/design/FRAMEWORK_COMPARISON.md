@@ -36,8 +36,8 @@ Sources: issue #124, PRs #114, #146.
 | OneForAll | Yes | Yes | Yes |
 | RestForOne | Yes | No | Yes |
 | Meltdown protection | Yes | No | Yes |
-| Supervision trees | Yes (static) | Limited | **Full Erlang-style** |
-| Dynamic supervisors | Planned ([#134](https://github.com/lambdaclass/spawned/issues/134)) | No | Yes |
+| Supervision trees | Yes (static + dynamic) | Limited | **Full Erlang-style** |
+| Dynamic supervisors | Yes ([#134](https://github.com/lambdaclass/spawned/issues/134)) | No | Yes |
 
 ### Erlang Alignment
 
@@ -239,12 +239,12 @@ The reference model for actor frameworks.
 | Supervision trees (static) | Erlang, Ractor | Done |
 | Meltdown protection | Bastion, Ractor | Done |
 | `ShutdownType::Timeout` escalation | Erlang | Done |
+| Dynamic supervisors ([#134](https://github.com/lambdaclass/spawned/issues/134)) | Erlang, Ractor | Done |
 
 ### What's Planned
 
 | Feature | Source | Priority |
 |---------|--------|----------|
-| Dynamic supervisors ([#134](https://github.com/lambdaclass/spawned/issues/134)) | Erlang, Ractor | High |
 | Buffer strategies | core.async | Medium |
 | Level-triggered cancellation | Trio | Medium |
 

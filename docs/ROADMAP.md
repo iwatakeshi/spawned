@@ -24,7 +24,7 @@ Solved the two critical API issues ([#144](https://github.com/lambdaclass/spawne
 
 ## Phase 3: Supervision Trees — in progress
 
-Target: **v1.0.0**. Core supervision is shipped; dynamic supervisors and actor-level tests for OneForAll/RestForOne remain.
+Target: **v1.0.0**. Core supervision is shipped including dynamic supervisors.
 
 ### 3a. Exit Reasons — ✅ [PR #163](https://github.com/lambdaclass/spawned/pull/163)
 
@@ -62,11 +62,10 @@ Closes [#132](https://github.com/lambdaclass/spawned/issues/132) and [#133](http
 - **Meltdown protection** — restart intensity window (`max_restarts` within `Duration`)
 - **`ChildHandle::shutdown()` / `kill()`** — produce `ExitReason::Shutdown` / `Kill`
 - **`ShutdownType::Timeout` escalation** — `shutdown()` then wait; escalate to `kill()` on timeout (OTP default 5s for workers)
-- **Example** — [`supervised_workers`](../examples/supervised_workers)
+- **Dynamic supervisor** ([#134](https://github.com/lambdaclass/spawned/issues/134)) — `DynamicSupervisor` for runtime OneForOne child pools
+- **Examples** — [`supervised_workers`](../examples/supervised_workers), [`dynamic_workers`](../examples/dynamic_workers)
 
-**Still open within 3e:**
-
-- **Dynamic supervisor** ([#134](https://github.com/lambdaclass/spawned/issues/134)) — add/remove children at runtime
+**Still open within 3e:** none (MVP complete)
 
 ### Other Phase 3 work
 
@@ -98,7 +97,7 @@ Closes [#132](https://github.com/lambdaclass/spawned/issues/132) and [#133](http
 | Supervisor actor + child specs | ✅ Shipped |
 | Restart strategies (OneForOne/All/RestForOne) | ✅ Shipped |
 | Meltdown protection | ✅ Shipped |
-| Dynamic supervisor | ❌ Not started ([#134](https://github.com/lambdaclass/spawned/issues/134)) |
+| Dynamic supervisor | ✅ Shipped ([#134](https://github.com/lambdaclass/spawned/issues/134)) |
 | Process groups | ❌ Not started |
 | Distributed actors | ❌ Not started |
 

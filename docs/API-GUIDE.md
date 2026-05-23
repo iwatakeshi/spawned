@@ -487,6 +487,49 @@ On supervisor shutdown, children are stopped in reverse start order using each s
 
 See the [`supervised_workers`](../examples/supervised_workers) example and the manual supervisor pattern in [`exit_reason`](../examples/exit_reason) Scenario 9.
 
+### DynamicSupervisor
+
+For runtime child pools (Erlang `simple_one_for_one` style). Fixed **OneForOne** strategy; children are started via messages after the supervisor boots.
+
+Use when the child set is not known at build time (connection handlers, job workers). For a fixed tree known at startup, use static [`Supervisor::builder()`](#supervisor-builder) instead.
+
+```rust
+use spawned_concurrency::tasks::{
+    dynamic_supervisor::ChildSpec, DynamicSupervisor, DynamicSupervisorApi,
+};
+use spawned_concurrency::{RestartIntensity, RestartType};
+
+let sup = DynamicSupervisor::builder()
+    .max_children(100)   // optional
+    .intensity(RestartIntensity {
+        max_restarts: 5,
+        within: Duration::from_secs(10),
+    })
+    .start();
+
+let handle = sup
+    .start_child(
+        ChildSpec::worker("conn", || ConnectionHandler::new(), RestartType::Temporary),
+        Some("conn-1".into()),  // optional registry name
+    )
+    .await?
+    .unwrap();
+
+assert_eq!(sup.count_children().await?, 1);
+sup.terminate_child(handle.id()).await?;  // intentional remove — no restart
+```
+
+| API | Description |
+|-----|-------------|
+| `start_child(spec, reg_name)` | Start a child; returns `ChildHandle`. Instance id is `{spec.id}#{n}`. |
+| `terminate_child(actor_id)` | Graceful shutdown and remove from supervision (no restart) |
+| `count_children()` | Number of alive children |
+| `which_children()` | List `DynamicChildInfo` (id, actor_id, restart/shutdown policy) |
+
+`DynamicSupervisorError` covers `MaxChildrenExceeded`, `ChildNotFound`, `DuplicateChildId`, and registry failures.
+
+See [`dynamic_workers`](../examples/dynamic_workers).
+
 ## Response\<T\>
 
 `Response<T>` is the return type for protocol request methods. It works in both execution modes:

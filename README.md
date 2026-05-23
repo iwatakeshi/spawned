@@ -202,7 +202,7 @@ Protocols make this separation explicit: the trait defines *what* an actor does,
 
 ## Roadmap
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the full roadmap. Phase 3 supervision (child specs, supervisor actor, restart strategies) is shipped; v1.0.0 targets dynamic supervisors and remaining OTP parity.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the full roadmap. Phase 3 supervision (child specs, static and dynamic supervisors, restart strategies) is shipped.
 
 ## Inspiration
 

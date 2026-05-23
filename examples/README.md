@@ -12,6 +12,7 @@
 | [`service_discovery`](service_discovery) | tasks | Global registry |
 | [`exit_reason`](exit_reason) | tasks | ExitReason, ChildHandle, monitors, links |
 | [`supervised_workers`](supervised_workers) | tasks | ChildSpec, Supervisor, OneForOne restart |
+| [`dynamic_workers`](dynamic_workers) | tasks | DynamicSupervisor, runtime child pool |
 | [`signal_test`](signal_test) | tasks | Timers + `send_message_on` |
 | [`signal_test_threads`](signal_test_threads) | threads | Timers + signals, thread-based |
 | [`updater`](updater) | tasks | Periodic HTTP via `send_interval` |
