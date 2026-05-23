@@ -61,13 +61,12 @@ Closes [#132](https://github.com/lambdaclass/spawned/issues/132) and [#133](http
 - **Restart strategies** — `OneForOne`, `OneForAll`, `RestForOne` (shared `SupervisorLogic`)
 - **Meltdown protection** — restart intensity window (`max_restarts` within `Duration`)
 - **`ChildHandle::shutdown()` / `kill()`** — produce `ExitReason::Shutdown` / `Kill`
+- **`ShutdownType::Timeout` escalation** — `shutdown()` then wait; escalate to `kill()` on timeout (OTP default 5s for workers)
 - **Example** — [`supervised_workers`](../examples/supervised_workers)
 
 **Still open within 3e:**
 
 - **Dynamic supervisor** ([#134](https://github.com/lambdaclass/spawned/issues/134)) — add/remove children at runtime
-- **`ShutdownType::Timeout`** — escalate to `kill()` after a grace period (currently treated like `Infinity`)
-- **Actor-level integration tests** for OneForAll and RestForOne (logic is unit-tested)
 
 ### Other Phase 3 work
 

@@ -347,6 +347,7 @@ let reason = handle.wait_exit_async().await;  // tasks mode
 | `handle.exit_reason()` | Poll exit reason; `None` if still running |
 | `handle.wait_exit_async()` | Async wait (both modes; threads mode uses `spawn_blocking`) |
 | `handle.wait_exit_blocking()` | Block until exit (see docs for tokio runtime constraints) |
+| `handle.wait_exit_*_with_timeout(d)` | Timed wait; returns `None` on timeout |
 
 Use `Vec<ChildHandle>` to manage heterogeneous actors. See the [`exit_reason`](../examples/exit_reason) example for monitors and manual linking.
 
@@ -407,7 +408,7 @@ Built-in Erlang-style supervision. Shared policy types live in the crate root; `
 ```rust
 use spawned_concurrency::{
     RestartType, ShutdownType, ChildType, RestartIntensity, SupervisorStrategy,
-    should_restart,
+    should_restart, shutdown_child_async, shutdown_child_blocking, DEFAULT_WORKER_SHUTDOWN,
 };
 ```
 
@@ -417,10 +418,30 @@ use spawned_concurrency::{
 | `RestartType::Transient` | Restart only on abnormal exit (`is_abnormal()`) |
 | `RestartType::Temporary` | Never restart |
 | `ShutdownType::Infinity` | Wait for `stopped()` during supervisor shutdown |
-| `ShutdownType::Timeout(d)` | Grace period (escalation to kill planned) |
+| `ShutdownType::Timeout(d)` | Grace period, then escalate to `kill()` |
 | `ShutdownType::BrutalKill` | Immediate `kill()` on shutdown |
 | `RestartIntensity` | `{ max_restarts, within }` — meltdown if exceeded |
 | `SupervisorStrategy` | `OneForOne`, `OneForAll`, `RestForOne` |
+
+**OTP defaults:** `ChildSpec::worker()` uses `DEFAULT_WORKER_SHUTDOWN` (`Timeout(5s)`). Nested supervisors default to `ShutdownType::Infinity`. Override with `.with_shutdown(...)` when a child needs longer cleanup.
+
+### Shutdown orchestration
+
+Shared helpers apply a `ShutdownType` and block until the child exits:
+
+```rust
+use spawned_concurrency::{shutdown_child_async, shutdown_child_blocking, ShutdownType};
+
+// Blocking (threads supervisors, batch terminate in threads mode)
+let reason = shutdown_child_blocking(&handle, ShutdownType::Timeout(Duration::from_secs(5)));
+
+// Async (tasks supervisors)
+let reason = shutdown_child_async(&handle, ShutdownType::Timeout(Duration::from_secs(5))).await;
+```
+
+For `Timeout`, the flow is: `shutdown()` → timed wait → on timeout, log a warning and `kill()` → wait for exit. Supervisors use these helpers in `stopped()` and during OneForAll / RestForOne batch termination.
+
+**Note:** `kill()` skips `stopped()` but does not interrupt an in-flight message handler or `stopped()` callback. Escalation takes effect once the actor returns to its message loop; until then the supervisor continues waiting for the child to exit.
 
 ### ChildSpec
 
@@ -433,8 +454,9 @@ use spawned_concurrency::{
 };
 use std::time::Duration;
 
-let spec = ChildSpec::worker("worker1", || Worker::new(), RestartType::Permanent)
-    .with_shutdown(ShutdownType::Infinity);
+let spec = ChildSpec::worker("worker1", || Worker::new(), RestartType::Permanent);
+// Default shutdown is Timeout(5s); use Infinity for long stopped() cleanup:
+let spec = spec.with_shutdown(ShutdownType::Infinity);
 
 // Nested supervisor:
 let nested = ChildSpec::supervisor("sup", || inner_supervisor(), RestartType::Permanent);
@@ -461,7 +483,7 @@ The supervisor enables `trap_exit(true)` in `started()`, links each child via `s
 - **RestForOne** — shut down the dead child and all children started after it, then restart those
 - **Meltdown** — supervisor stops abnormally when restart intensity is exceeded
 
-On supervisor shutdown, children are stopped in reverse start order using each spec's `ShutdownType` (`shutdown()` or `kill()`).
+On supervisor shutdown, children are stopped in reverse start order using each spec's `ShutdownType`. Batch termination (OneForAll / RestForOne) waits for each child to exit before restarting survivors.
 
 See the [`supervised_workers`](../examples/supervised_workers) example and the manual supervisor pattern in [`exit_reason`](../examples/exit_reason) Scenario 9.
 

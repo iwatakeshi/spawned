@@ -238,13 +238,13 @@ The reference model for actor frameworks.
 | Links & monitors | Erlang | Done |
 | Supervision trees (static) | Erlang, Ractor | Done |
 | Meltdown protection | Bastion, Ractor | Done |
+| `ShutdownType::Timeout` escalation | Erlang | Done |
 
 ### What's Planned
 
 | Feature | Source | Priority |
 |---------|--------|----------|
 | Dynamic supervisors ([#134](https://github.com/lambdaclass/spawned/issues/134)) | Erlang, Ractor | High |
-| `ShutdownType::Timeout` escalation | Erlang | Medium |
 | Buffer strategies | core.async | Medium |
 | Level-triggered cancellation | Trio | Medium |
 
