@@ -87,6 +87,8 @@ For a complete API reference covering all features (timers, type erasure, regist
 - **Dual execution modes** — async/tokio (`tasks`) or blocking OS threads (`threads`) with the same API
 - **Type-erased protocol refs** — `XRef` types let actors communicate through protocol interfaces without knowing concrete types
 - **Actor registry** — global name-based registry for discovering actors at runtime
+- **Death observation** — monitors (`Down`) and bidirectional links (`Exit` + `trap_exit`)
+- **Lifecycle handles** — `ChildHandle` and `ExitReason` for supervision scaffolding
 - **Timers** — `send_after` and `send_interval` for delayed and periodic messages
 - **Signal handling** — `send_message_on` to deliver messages on cancellation token signals
 - **Backend selection** — async runtime, blocking thread pool, or dedicated OS thread (tasks mode)
@@ -116,6 +118,7 @@ The return type on each protocol method determines the message kind:
 | [`ping_pong`](examples/ping_pong) | tasks | Producer/consumer — bidirectional messaging between actors |
 | [`ping_pong_threads`](examples/ping_pong_threads) | threads | Producer/consumer — thread-based |
 | [`service_discovery`](examples/service_discovery) | tasks | Registry — register and discover actors by name |
+| [`exit_reason`](examples/exit_reason) | tasks | Exit reasons, ChildHandle, monitors, and links |
 | [`signal_test`](examples/signal_test) | tasks | Timers — `send_interval` and `send_message_on` for cancellation |
 | [`signal_test_threads`](examples/signal_test_threads) | threads | Timers — thread-based |
 | [`updater`](examples/updater) | tasks | Periodic HTTP — recurrent timer-driven requests |

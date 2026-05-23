@@ -1,17 +1,21 @@
 # Spawned examples
-Some examples to test runtime and concurrency:
 
-- ping_pong: Simple example to test Actor abstraction using `tasks` implementation.
-- ping_pong_threads: ping_pong example on `threads` implementation.
-- name_server: Simple example to test Actor abstraction using `tasks` implementation.
-- bank: A bit more complex example for Actor using `tasks` implementation.
-- bank_threads: bank example on `threads` implementation.
-- chat_room: Chat room example using `tasks` implementation.
-- chat_room_threads: chat_room example on `threads` implementation.
-- updater: A "live" process that checks a URL periodically using `tasks` implementation.
-- updater_threads: updater example on `threads` implementation.
-- signal_test: Signal handling example using `tasks` implementation.
-- signal_test_threads: signal_test example on `threads` implementation.
-- blocking_genserver: Example demonstrating Backend::Thread to handle blocking tasks.
-- busy_genserver_warning: Example showing warning detection for tasks that take too long.
-- service_discovery: Example demonstrating the named registry for service discovery.
+| Example | Mode | What it demonstrates |
+|---------|------|----------------------|
+| [`name_server`](name_server) | tasks | Basic protocol + actor macros |
+| [`bank`](bank) | tasks | Typed per-handler errors |
+| [`bank_threads`](bank_threads) | threads | Same bank API, thread-based |
+| [`chat_room`](chat_room) | tasks | Multi-actor via protocol `XRef` type erasure |
+| [`chat_room_threads`](chat_room_threads) | threads | Chat room, thread-based |
+| [`ping_pong`](ping_pong) | tasks | Bidirectional actor communication |
+| [`ping_pong_threads`](ping_pong_threads) | threads | Ping/pong, thread-based |
+| [`service_discovery`](service_discovery) | tasks | Global registry |
+| [`exit_reason`](exit_reason) | tasks | ExitReason, ChildHandle, monitors, links |
+| [`signal_test`](signal_test) | tasks | Timers + `send_message_on` |
+| [`signal_test_threads`](signal_test_threads) | threads | Timers + signals, thread-based |
+| [`updater`](updater) | tasks | Periodic HTTP via `send_interval` |
+| [`updater_threads`](updater_threads) | threads | Updater, thread-based |
+| [`blocking_genserver`](blocking_genserver) | tasks | Backend comparison |
+| [`busy_genserver_warning`](busy_genserver_warning) | tasks | Blocking-operation warning |
+
+See [docs/ROADMAP.md](../docs/ROADMAP.md) for feature status.

@@ -1,5 +1,9 @@
 # Spawned Roadmap
 
+**Last updated:** after merging PRs #166 (links), #168 (threads shutdown perf), and #162 (this doc).
+
+For API details, see the [API Guide](API-GUIDE.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
+
 ## Phase 1: Core Actor Framework — ✅ v0.4
 
 - `Actor` trait with `started()` / `stopped()` lifecycle
@@ -11,65 +15,59 @@
 
 ## Phase 2: Type-Safe Multi-Message API — ✅ v0.5
 
-Solved the two critical API issues (#144, #145) that blocked real-world usage:
+Solved the two critical API issues ([#144](https://github.com/lambdaclass/spawned/issues/144), [#145](https://github.com/lambdaclass/spawned/issues/145)):
 
-- `Handler<M>` pattern — per-message type safety, no more `unreachable!()` arms
-- `Recipient<M>` — type-erased handles, breaking circular dependencies between actors
-- `#[protocol]` macro — generates message structs, blanket impls, and `XRef` type aliases from a trait definition
-- `#[actor]` macro — derives `Actor` + `Handler<M>` boilerplate
+- `Handler<M>` pattern — per-message type safety
+- `Recipient<M>` and protocol `XRef` — type-erased handles for bidirectional actors
+- `#[protocol]` and `#[actor]` macros
 - Named registry — global actor lookup by name
 
 ## Phase 3: Supervision Trees — in progress
 
-The missing piece for production fault tolerance. Target: v1.0.0.
-
-Following Erlang/OTP's proven design: supervisors link to children, trap exit signals, and apply restart policies. See `openspec/changes/supervision-trees/` for the full design and specs.
+Target: **v1.0.0**. Building blocks are largely in place; supervisor actor and restart policies remain.
 
 ### 3a. Exit Reasons — ✅ [PR #163](https://github.com/lambdaclass/spawned/pull/163)
 
-- `ExitReason` enum (`Normal`, `Shutdown`, `Panic(String)`, `Kill`) with `is_abnormal()`
-- `ActorRef::wait_exit()` and `ActorRef::exit_reason()` to observe why an actor stopped
-- Both tasks and threads modes
+- `ExitReason` enum with `is_abnormal()`
+- `ActorRef::wait_exit()` and `exit_reason()`
 
 ### 3b. ChildHandle and ActorId — ✅ [PR #164](https://github.com/lambdaclass/spawned/pull/164)
 
-- `ActorId` — unique identity key (Spawned's equivalent of Erlang's Pid, but kept internal)
-- `ChildHandle` — type-erased handle to a running actor; lets supervisors manage children of any actor type uniformly
-- `From<ActorRef<A>> for ChildHandle` works in both execution modes
-- `Context::id()` and `ActorRef::id()` accessors
+- `ActorId` — unique per-actor identity
+- `ChildHandle` — type-erased stop, wait, liveness, exit reason
 
-### 3c. Monitors — next
+### 3c. Monitors — ✅ [PR #165](https://github.com/lambdaclass/spawned/pull/165)
 
-Unidirectional actor observation. Used by supervisors and any actor that wants to observe a target's death without coupling lifetimes.
+- `ctx.monitor(child_handle)` → `MonitorRef`
+- `ctx.demonitor(monitor_ref)`
+- `Down` message via `Handler<Down>`
 
-- **`ctx.monitor(child_handle)`** → `MonitorRef`, delivers a `Down` message via `Handler<Down>` when the target stops
-- **`ctx.demonitor(monitor_ref)`** — cancel a monitor
-- Multiple independent monitors allowed between the same pair
-- Monitors don't affect the monitored actor
+### 3d. Links and Trap Exit — ✅ [PR #166](https://github.com/lambdaclass/spawned/pull/166)
 
-### 3d. Links and Trap Exit
+Closes [#131](https://github.com/lambdaclass/spawned/issues/131) (monitor half was #165).
 
-Bidirectional fate-sharing. Used by supervisors and for peer actors that must always run together.
+- Bidirectional `ctx.link()` / `ctx.unlink()`
+- `ctx.trap_exit(true)` — receive `Exit` via `Actor::exit_received` instead of dying
+- `start_linked(parent_ctx)` on `ActorStart`
+- Transitive propagation through non-trapping middle actors
+- `ExitReason::Kill` is untrappable
 
-- **Bidirectional links** ([#131](https://github.com/lambdaclass/spawned/issues/131)) — linked actors die together; supervisors trap exits to receive `Exit` messages instead
-- **Atomic `start_linked(ctx)`** — prevents race between spawn and link
-- **`ctx.trap_exit(true)`** — converts exit signals into `Exit` messages via `Handler<Exit>`
-- **Kill is untrappable** — `ExitReason::Kill` bypasses trap_exit
+### 3e. Child Specs and Supervisor — next
 
-### 3e. Child Specs and Supervisor
+- **Child specs** ([#132](https://github.com/lambdaclass/spawned/issues/132)) — restart type, shutdown type
+- **Supervisor actor** ([#133](https://github.com/lambdaclass/spawned/issues/133)) — OneForOne, OneForAll, RestForOne
+- **Meltdown protection** — restart intensity limits
+- **Dynamic supervisor** ([#134](https://github.com/lambdaclass/spawned/issues/134)) — stretch goal
 
-- **Child specs** ([#132](https://github.com/lambdaclass/spawned/issues/132)) — factory pattern with restart type (`Permanent`, `Transient`, `Temporary`) and shutdown type (`BrutalKill`, `Timeout`, `Infinity`)
-- **Supervisor actor** ([#133](https://github.com/lambdaclass/spawned/issues/133)) — `start_linked()` + `trap_exit` + `Handler<Exit>`, with strategies: OneForOne, OneForAll, RestForOne
-- **Meltdown protection** — sliding window restart counter; supervisor self-terminates when exceeded
-- **Dynamic supervisor** ([#134](https://github.com/lambdaclass/spawned/issues/134)) — add/remove children at runtime (stretch goal)
-- **Error handling** ([#125](https://github.com/lambdaclass/spawned/issues/125)) — proper error propagation for channel send operations
+### Other Phase 3 work
 
-## Phase 4: Documentation & Polish — pre-v1.0.0 release
+- **Threads shutdown perf** — ✅ [PR #168](https://github.com/lambdaclass/spawned/pull/168), closes [#157](https://github.com/lambdaclass/spawned/issues/157): poison-pill `Shutdown` replaces 100ms `recv_timeout` polling in threads mode
 
-- Comprehensive API docs
-- Supervision and protocol guides
+## Phase 4: Documentation & Polish — ongoing
+
+- API Guide, migration guide, 15 examples
+- Supervision guide (blocked on 3e)
 - Doc tests in crate READMEs ([#137](https://github.com/lambdaclass/spawned/issues/137))
-- End-to-end examples (chat server, job queue, etc.)
 
 ## Future Considerations (post-v1.0)
 
@@ -78,13 +76,25 @@ Bidirectional fate-sharing. Used by supervisors and for peer actors that must al
 | Process groups (pg) | Erlang-style actor grouping |
 | Priority message channels | Signal > Stop > Supervision > Message |
 | State machines (`gen_statem`) | Protocol implementations |
-| Backoff strategies | Built into supervision (Akka pattern) |
+| Backoff strategies | Built into supervision |
 | Persistence / event sourcing | Akka Persistence pattern |
 | Clustering / distribution | `ractor_cluster` equivalent |
+| Built-in observability | Mailbox depth, message latency |
+| Custom runtime | Purpose-built actor runtime |
+
+## What's still missing for OTP parity
+
+| Feature | Status |
+|---------|--------|
+| Supervisor actor + child specs | ❌ Not started |
+| Restart strategies | ❌ Not started |
+| Meltdown protection | ❌ Not started |
+| Process groups | ❌ Not started |
+| Distributed actors | ❌ Not started |
 
 ## References
 
-- PR #153: v0.5 implementation
-- PR #154: Design research and framework comparison docs
-- PR #163: Exit reason tracking (Phase 3a)
-- PR #164: ChildHandle and ActorId (Phase 3b)
+- [PR #153](https://github.com/lambdaclass/spawned/pull/153): v0.5 implementation
+- [PR #154](https://github.com/lambdaclass/spawned/pull/154): Design research
+- [PR #163–#166](https://github.com/lambdaclass/spawned/pulls?q=is%3Apr+is%3Amerged): Supervision building blocks
+- [PR #168](https://github.com/lambdaclass/spawned/pull/168): Threads shutdown perf

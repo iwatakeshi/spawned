@@ -13,6 +13,9 @@ Complete reference for the spawned actor framework. For a quick introduction, se
 - [spawn\_listener](#spawn_listener)
 - [Type Erasure: Recipient and Receiver](#type-erasure-recipient-and-receiver)
 - [Registry](#registry)
+- [ChildHandle and ActorId](#childhandle-and-actorid)
+- [Monitors](#monitors)
+- [Links and trap\_exit](#links-and-trap_exit)
 - [Response\<T\>](#responset)
 - [Message Trait](#message-trait)
 - [Error Handling](#error-handling)
@@ -322,6 +325,67 @@ The registry uses `Any`-based downcasting, so `whereis` returns `None` if the st
 
 ---
 
+## ChildHandle and ActorId
+
+`ActorId` uniquely identifies a running actor. `ChildHandle` is a type-erased handle for lifecycle operations — stop, wait, poll exit reason — without knowing the actor's message protocol.
+
+```rust
+let worker = Worker::new().start();
+let handle: ChildHandle = worker.child_handle();
+
+handle.stop();
+let reason = handle.wait_exit_async().await;  // tasks mode
+```
+
+Use `Vec<ChildHandle>` to manage heterogeneous actors. See the [`exit_reason`](../examples/exit_reason) example.
+
+---
+
+## Monitors
+
+Unidirectional death observation. When a monitored actor stops, a `Down` message is delivered to the monitoring actor's mailbox.
+
+```rust
+impl Handler<Down> for Watcher {
+    async fn handle(&mut self, msg: Down, _ctx: &Context<Self>) {
+        tracing::info!("actor died: {} ({})", msg.monitor_ref, msg.reason);
+    }
+}
+
+let monitor_ref = ctx.monitor(&target.child_handle());
+ctx.demonitor(monitor_ref);  // cancel before target dies
+```
+
+---
+
+## Links and trap_exit
+
+Bidirectional fate-sharing. When a linked actor dies abnormally, the peer receives an exit signal — either cancelling it or delivering an `Exit` message if trapping.
+
+```rust
+impl Actor for Supervisor {
+    async fn exit_received(&mut self, exit: Exit, ctx: &Context<Self>) {
+        tracing::info!("child {} died: {}", exit.from, exit.reason);
+        // restart logic goes here (not yet built into the framework)
+    }
+}
+
+// Supervisor pattern:
+ctx.trap_exit(true);
+let child = Worker::new().start_linked(&ctx);
+```
+
+| API | Description |
+|-----|-------------|
+| `ctx.link(&child_handle)` | Bidirectional link (idempotent) |
+| `ctx.unlink(&child_handle)` | Remove link |
+| `ctx.trap_exit(true)` | Convert exit signals to `Exit` via `exit_received` |
+| `actor.start_linked(&parent_ctx)` | Spawn and link atomically |
+
+`ExitReason::Kill` is untrappable. Normal exits are not propagated to non-trapping peers.
+
+---
+
 ## Response\<T\>
 
 `Response<T>` is the return type for protocol request methods. It works in both execution modes:
@@ -385,18 +449,30 @@ impl Message for GetCount {
 
 ## Error Handling
 
-All actor communication can fail with `ActorError`:
+### Communication errors (`ActorError`)
 
 ```rust
 pub enum ActorError {
-    ActorStopped,    // The actor has stopped or its mailbox is closed
-    RequestTimeout,  // A request exceeded the timeout (default 5s)
+    ActorStopped,
+    RequestTimeout,
 }
 ```
 
-- `send()` returns `Err(ActorStopped)` if the actor has stopped.
-- `request()` returns `Err(ActorStopped)` if the actor stops before replying, or `Err(RequestTimeout)` if the reply doesn't arrive in time.
-- `request_with_timeout()` lets you specify a custom timeout.
+### Exit reasons (`ExitReason`)
+
+```rust
+pub enum ExitReason {
+    Normal,
+    Shutdown,         // reserved for supervisor-ordered shutdown
+    Panic(String),
+    Kill,
+}
+```
+
+Use `reason.is_abnormal()` for restart policy decisions. Supervisors are not yet implemented — `ExitReason` and links/monitors are scaffolding.
+
+- `send()` / `request()` return `Err(ActorStopped)` when the actor has stopped
+- All lifecycle phases are wrapped in `catch_unwind`
 
 ---
 
