@@ -332,9 +332,12 @@ The registry uses `Any`-based downcasting, so `whereis` returns `None` if the st
 
 Erlang-style named actor sets for broadcast and dispatch. Single-node MVP; see [deferred items](#deferred-not-in-mvp-1) below.
 
+Both runtimes expose the same typed API — import from `tasks::pg` or `threads::pg`:
+
 ```rust
-use spawned_concurrency::pg;                        // ChildHandle membership
-use spawned_concurrency::tasks::pg as tasks_pg;   // typed ActorRef dispatch
+use spawned_concurrency::pg;                      // ChildHandle membership (shared)
+use spawned_concurrency::tasks::pg as tasks_pg; // async ActorRef dispatch
+// use spawned_concurrency::threads::pg as threads_pg;  // blocking ActorRef dispatch
 ```
 
 ### Untyped membership (`spawned_concurrency::pg`)
@@ -349,6 +352,8 @@ use spawned_concurrency::tasks::pg as tasks_pg;   // typed ActorRef dispatch
 
 ### Typed dispatch (`tasks::pg` or `threads::pg`)
 
+Same functions in both modules; only the underlying `ActorRef` mode differs.
+
 | Function | Description |
 |----------|-------------|
 | `pg::join(group, &actor_ref)` | Join for later message dispatch |
@@ -356,7 +361,7 @@ use spawned_concurrency::tasks::pg as tasks_pg;   // typed ActorRef dispatch
 | `pg::members::<A>(group)` | Live `ActorRef<A>` members |
 | `pg::local_members::<A>(group)` | Same as `members` on a single node |
 
-### Example
+### Example (tasks mode)
 
 ```rust
 use spawned_concurrency::tasks::{pg, Actor, Context, Handler, ActorStart as _};
@@ -381,9 +386,36 @@ for w in pg::members::<Worker>("pool") {
 }
 ```
 
+### Example (threads mode)
+
+Same pattern with blocking handlers — import `spawned_concurrency::threads::pg` instead:
+
+```rust
+use spawned_concurrency::threads::{pg, Actor, Context, Handler, ActorStart as _};
+
+impl Actor for Worker {
+    fn started(&mut self, ctx: &Context<Self>) {
+        pg::join("pool", &ctx.actor_ref());
+    }
+}
+impl Handler<Ping> for Worker {
+    fn handle(&mut self, _msg: Ping, _ctx: &Context<Self>) { /* ... */ }
+}
+
+for w in pg::members::<Worker>("pool") {
+    w.send(Ping)?;
+}
+```
+
 Actors are **automatically removed** from all groups when they exit. `DynamicSupervisor` optional registry names are separate from pg — join explicitly if needed.
 
-See [`pg_workers`](../examples/pg_workers).
+See [`pg_workers`](../examples/pg_workers) (tasks mode demo).
+
+### Testing
+
+Integration tests in [`concurrency/tests/pg_integration.rs`](../concurrency/tests/pg_integration.rs) cover both runtimes (`mod tasks` and `mod threads`): join, broadcast, refcounted leave, auto-leave on exit, and `ChildHandle` membership.
+
+Run: `cargo test -p spawned-concurrency --test pg_integration`
 
 #### Deferred (not in MVP)
 
