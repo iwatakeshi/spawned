@@ -91,7 +91,8 @@ pub mod threads;
 
 pub use child_handle::{ActorId, ChildHandle};
 pub use child_spec::{
-    should_restart, ChildType, RestartIntensity, RestartType, ShutdownType,
+    should_restart, shutdown_child_async, shutdown_child_blocking, ChildType,
+    DEFAULT_WORKER_SHUTDOWN, RestartIntensity, RestartType, ShutdownType,
 };
 pub use error::{ActorError, ExitReason};
 pub use link::Exit;
