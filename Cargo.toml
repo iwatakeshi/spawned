@@ -21,6 +21,7 @@ members = [
     "examples/service_discovery",
     "examples/exit_reason",
     "examples/supervised_workers",
+    "examples/dynamic_workers",
 ]
 
 [workspace.dependencies]
