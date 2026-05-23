@@ -3,6 +3,7 @@ use crate::exit_request::RequestedExitReason;
 use crate::link::{LinkTable, LinkedExitReason, SendExitFn, TrapExitFlag};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // ActorId
@@ -242,6 +243,52 @@ impl ChildHandle {
             }
         }
     }
+
+    /// Block until the actor stops or `timeout` elapses.
+    ///
+    /// Returns `Some(reason)` when the child exits in time, `None` on timeout.
+    /// If the child has already exited, returns immediately with its reason.
+    pub fn wait_exit_blocking_with_timeout(&self, timeout: Duration) -> Option<ExitReason> {
+        if let Some(reason) = self.exit_reason() {
+            return Some(reason);
+        }
+        match &self.completion {
+            Completion::Tasks(rx) => wait_for_tasks_exit_blocking_with_timeout(rx.clone(), timeout),
+            Completion::Threads(completion) => {
+                wait_for_threads_exit_blocking_with_timeout(completion, timeout)
+            }
+        }
+    }
+
+    /// Async wait until the actor stops or `timeout` elapses.
+    ///
+    /// Returns `Some(reason)` when the child exits in time, `None` on timeout.
+    pub async fn wait_exit_async_with_timeout(&self, timeout: Duration) -> Option<ExitReason> {
+        if let Some(reason) = self.exit_reason() {
+            return Some(reason);
+        }
+        match &self.completion {
+            Completion::Tasks(rx) => match spawned_rt::tasks::timeout(timeout, wait_loop(rx.clone())).await
+            {
+                Ok(reason) => Some(reason),
+                Err(_) => None,
+            },
+            Completion::Threads(_) => {
+                let handle = self.clone();
+                match spawned_rt::tasks::timeout(
+                    timeout,
+                    spawned_rt::tasks::spawn_blocking(move || {
+                        handle.wait_exit_blocking_with_timeout(timeout)
+                    }),
+                )
+                .await
+                {
+                    Ok(Ok(reason)) => reason,
+                    Ok(Err(_)) | Err(_) => None,
+                }
+            }
+        }
+    }
 }
 
 /// Async loop that polls a watch channel until it carries an exit reason.
@@ -269,6 +316,26 @@ fn wait_for_threads_exit_blocking(completion: &(Mutex<Option<ExitReason>>, Condv
     }
 }
 
+fn wait_for_threads_exit_blocking_with_timeout(
+    completion: &(Mutex<Option<ExitReason>>, Condvar),
+    timeout: Duration,
+) -> Option<ExitReason> {
+    let (lock, cvar) = completion;
+    let mut guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+    loop {
+        if let Some(reason) = guard.clone() {
+            return Some(reason);
+        }
+        let (new_guard, wait_result) = cvar
+            .wait_timeout(guard, timeout)
+            .unwrap_or_else(|p| p.into_inner());
+        guard = new_guard;
+        if wait_result.timed_out() {
+            return None;
+        }
+    }
+}
+
 /// Blocking wait on a tasks-mode watch channel.
 ///
 /// - From a sync context (no tokio runtime): creates a temporary runtime.
@@ -284,7 +351,6 @@ fn wait_for_threads_exit_blocking(completion: &(Mutex<Option<ExitReason>>, Condv
 fn wait_for_tasks_exit_blocking(
     rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
 ) -> ExitReason {
-    // Fast path: already done — works from any context, no runtime needed
     if let Some(reason) = rx.borrow().clone() {
         return reason;
     }
@@ -292,22 +358,48 @@ fn wait_for_tasks_exit_blocking(
     let wait = wait_loop(rx);
 
     match spawned_rt::tasks::Handle::try_current() {
-        // No active runtime — create a temporary one
         Err(_) => spawned_rt::threads::block_on(wait),
-        // Inside a tokio runtime — check the flavor
         Ok(handle) => match handle.runtime_flavor() {
             spawned_rt::tasks::RuntimeFlavor::MultiThread => {
                 spawned_rt::tasks::block_in_place(|| handle.block_on(wait))
             }
-            // Any other flavor (current-thread, MultiThreadAlt, future variants):
-            // blocking here would deadlock the actor task. RuntimeFlavor is
-            // #[non_exhaustive] so we conservatively reject anything other than
-            // the explicitly-tested MultiThread variant.
             other => panic!(
                 "ChildHandle::wait_exit_blocking() cannot be called from within a \
                 non-multi-thread tokio runtime ({other:?}); doing so would deadlock \
                 the actor task that this call is waiting for. Use wait_exit_async() \
                 from async context instead, or run on a multi-thread runtime."
+            ),
+        },
+    }
+}
+
+fn wait_for_tasks_exit_blocking_with_timeout(
+    rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+    timeout: Duration,
+) -> Option<ExitReason> {
+    if let Some(reason) = rx.borrow().clone() {
+        return Some(reason);
+    }
+
+    let wait = async {
+        match spawned_rt::tasks::timeout(timeout, wait_loop(rx)).await {
+            Ok(reason) => Some(reason),
+            Err(_) => None,
+        }
+    };
+
+    match spawned_rt::tasks::Handle::try_current() {
+        Err(_) => spawned_rt::threads::block_on(wait),
+        Ok(handle) => match handle.runtime_flavor() {
+            spawned_rt::tasks::RuntimeFlavor::MultiThread => {
+                spawned_rt::tasks::block_in_place(|| handle.block_on(wait))
+            }
+            other => panic!(
+                "ChildHandle::wait_exit_blocking_with_timeout() cannot be called from within a \
+                non-multi-thread tokio runtime ({other:?}); doing so would deadlock \
+                the actor task that this call is waiting for. Use \
+                wait_exit_async_with_timeout() from async context instead, or run on a \
+                multi-thread runtime."
             ),
         },
     }
@@ -711,6 +803,90 @@ mod tests {
             handle.kill();
             let reason = handle.wait_exit_async().await;
             assert_eq!(reason, ExitReason::Kill);
+        });
+    }
+
+    #[test]
+    fn child_handle_wait_blocking_with_timeout_returns_none_on_timeout() {
+        let completion = Arc::new((Mutex::new(None), Condvar::new()));
+        let token = spawned_rt::threads::CancellationToken::new();
+        let cancel = Arc::new(move || {
+            token.cancel();
+        });
+        let handle = test_handle(cancel, completion);
+
+        assert_eq!(
+            handle.wait_exit_blocking_with_timeout(Duration::from_millis(20)),
+            None
+        );
+    }
+
+    #[test]
+    fn child_handle_wait_blocking_with_timeout_returns_reason_when_ready() {
+        let completion = Arc::new((Mutex::new(None), Condvar::new()));
+        let token = spawned_rt::threads::CancellationToken::new();
+        let cancel = Arc::new(move || {
+            token.cancel();
+        });
+        let handle = test_handle(cancel, completion.clone());
+
+        {
+            let (lock, cvar) = &*completion;
+            let mut guard = lock.lock().unwrap();
+            *guard = Some(ExitReason::Shutdown);
+            cvar.notify_all();
+        }
+
+        assert_eq!(
+            handle.wait_exit_blocking_with_timeout(Duration::from_millis(50)),
+            Some(ExitReason::Shutdown)
+        );
+    }
+
+    #[test]
+    fn child_handle_wait_async_with_timeout_on_tasks_actor() {
+        use crate::tasks::actor::ActorStart;
+        use tasks_fixtures::Idler;
+
+        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let actor = Idler.start();
+            let handle = actor.child_handle();
+            handle.stop();
+
+            assert_eq!(
+                handle
+                    .wait_exit_async_with_timeout(Duration::from_secs(1))
+                    .await,
+                Some(ExitReason::Normal)
+            );
+        });
+    }
+
+    #[test]
+    fn child_handle_wait_async_with_timeout_returns_none_when_slow() {
+        use crate::tasks::actor::{Actor, ActorStart, Context};
+
+        struct SlowStopper;
+        impl Actor for SlowStopper {
+            async fn stopped(&mut self, _ctx: &Context<Self>) {
+                spawned_rt::tasks::sleep(Duration::from_secs(5)).await;
+            }
+        }
+
+        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let actor = SlowStopper.start();
+            let handle = actor.child_handle();
+            handle.shutdown();
+
+            assert_eq!(
+                handle
+                    .wait_exit_async_with_timeout(Duration::from_millis(50))
+                    .await,
+                None
+            );
+            assert!(handle.is_alive());
         });
     }
 }
