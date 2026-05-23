@@ -18,7 +18,7 @@ use spawned_rt::tasks as rt;
 
 fn main() {
     rt::run(async {
-        // your actor code here
-    })
+        rt::sleep(std::time::Duration::from_millis(1)).await;
+    });
 }
 ```

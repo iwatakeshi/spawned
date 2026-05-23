@@ -1,54 +1,5 @@
-//! Actor framework for Rust, inspired by Erlang/OTP.
-//!
-//! `spawned-concurrency` provides an actor model where concurrency logic is
-//! separated from business logic. Define message interfaces with `#[protocol]`,
-//! implement handlers with `#[actor]`, and call methods directly on actor references.
-//!
-//! # Quick Start
-//!
-//! ```ignore
-//! use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
-//! use spawned_concurrency::{actor, protocol, Response};
-//!
-//! #[protocol]
-//! pub trait GreeterProtocol: Send + Sync {
-//!     fn greet(&self, name: String) -> Response<String>;
-//! }
-//!
-//! pub struct Greeter;
-//!
-//! #[actor(protocol = GreeterProtocol)]
-//! impl Greeter {
-//!     pub fn new() -> Self { Greeter }
-//!
-//!     #[request_handler]
-//!     async fn handle_greet(&mut self, msg: greeter_protocol::Greet, _ctx: &Context<Self>) -> String {
-//!         format!("Hello, {}!", msg.name)
-//!     }
-//! }
-//! ```
-//!
-//! # Core Concepts
-//!
-//! **Protocols** — A `#[protocol]` trait defines the message interface. The macro generates:
-//! - One message struct per method (in a snake_case submodule)
-//! - A type-erased reference type (`XRef = Arc<dyn Protocol>`)
-//! - Blanket `impl Protocol for ActorRef<A>` so you can call methods directly
-//!
-//! Return types determine message kind:
-//! - [`Response<T>`] — request, works in both async and sync modes
-//! - `Result<(), ActorError>` — fire-and-forget send, returns send result
-//! - No return type — fire-and-forget send
-//!
-//! **Actors** — `#[actor]` on an impl block generates `impl Actor` and `Handler<M>`
-//! impls from annotated methods (`#[request_handler]`, `#[send_handler]`, `#[handler]`).
-//! Lifecycle hooks use `#[started]` and `#[stopped]`.
-//!
-//! **Type-Erased References** — Each protocol generates an `XRef` type alias
-//! (e.g., `NameServerRef = Arc<dyn NameServerProtocol>`) and a `ToXRef` converter
-//! trait. This lets actors accept protocol references without knowing the concrete
-//! actor type — useful for cross-actor communication patterns.
-//!
+#![doc = include_str!("../README.md")]
+
 //! # Modules
 //!
 //! - [`tasks`] — async actor runtime (requires tokio)
@@ -60,6 +11,7 @@
 //! - [`child_handle`] — `ChildHandle` and `ActorId` for type-erased actor management
 //! - [`child_spec`] — restart/shutdown policy types for supervision
 //! - [`supervisor`] — shared `SupervisorLogic` and `SupervisorStrategy`
+//! - [`dynamic_supervisor`] — shared errors and types for runtime supervision
 //! - [`monitor`] — `MonitorRef` and `Down` for unidirectional death observation
 //! - [`link`] — `Exit` and bidirectional links with `trap_exit` semantics
 //!
@@ -75,6 +27,7 @@
 //! - [`message::Message`] trait for manual message definitions without `#[protocol]`
 //! - `Recipient<M>` (`Arc<dyn Receiver<M>>`) for type-erased per-message references
 //! - [`tasks::Backend`] enum for choosing async runtime, blocking pool, or OS thread
+//! - [Supervision Guide](https://github.com/lambdaclass/spawned/blob/main/docs/SUPERVISION.md)
 
 pub mod child_handle;
 pub mod child_spec;
