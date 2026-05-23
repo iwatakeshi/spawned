@@ -147,7 +147,7 @@ let handle = sup
 |------|------------|
 | **OneForAll / RestForOne** | Use static `Supervisor` for batch restart trees; dynamic supervisor is OneForOne only |
 | **Separate `ChildSpec` type** | Import from `dynamic_supervisor::ChildSpec`, not the static supervisor module |
-| **Auto pg membership** | Call `tasks::pg::join` in the child's `started()` if the pool should be discoverable |
+| **Auto pg membership** | Call `tasks::pg::join` or `threads::pg::join` in the child's `started()` if the pool should be discoverable |
 | **Backoff between restarts** | Sleep in `started()` or wrap restarts in application logic |
 
 ## Process groups
@@ -156,6 +156,7 @@ Named sets of actors for broadcast and dispatch — complementary to supervision
 
 ```rust
 use spawned_concurrency::tasks::{pg, ActorStart as _};
+// or: use spawned_concurrency::threads::{pg, ActorStart as _};
 
 // In Worker::started()
 pg::join("handlers", &ctx.actor_ref());
@@ -166,7 +167,7 @@ for worker in pg::members::<Worker>("handlers") {
 }
 ```
 
-Actors auto-leave all groups on exit. See [API Guide — Process Groups](API-GUIDE.md#process-groups) and [`pg_workers`](../examples/pg_workers).
+Actors auto-leave all groups on exit. See [API Guide — Process Groups](API-GUIDE.md#process-groups) (tasks and threads examples), [`pg_workers`](../examples/pg_workers), and integration tests in [`pg_integration.rs`](../concurrency/tests/pg_integration.rs).
 
 **Deferred:** scopes, group membership monitors, distributed pg, built-in cast/call helpers. See [ROADMAP](ROADMAP.md).
 

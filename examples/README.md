@@ -13,7 +13,7 @@
 | [`exit_reason`](exit_reason) | tasks | ExitReason, ChildHandle, monitors, links |
 | [`supervised_workers`](supervised_workers) | tasks | ChildSpec, Supervisor, OneForOne restart |
 | [`dynamic_workers`](dynamic_workers) | tasks | DynamicSupervisor, runtime child pool |
-| [`pg_workers`](pg_workers) | tasks | Process groups — join, broadcast, auto-leave |
+| [`pg_workers`](pg_workers) | tasks | Process groups — join, broadcast, auto-leave (`threads::pg` covered in [`pg_integration`](../concurrency/tests/pg_integration.rs)) |
 | [`signal_test`](signal_test) | tasks | Timers + `send_message_on` |
 | [`signal_test_threads`](signal_test_threads) | threads | Timers + signals, thread-based |
 | [`updater`](updater) | tasks | Periodic HTTP via `send_interval` |

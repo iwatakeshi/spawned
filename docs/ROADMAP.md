@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after process groups MVP and Phase 4 supervision guide.
+**Last updated:** after threads process groups integration tests.
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -93,6 +93,7 @@ Erlang/Ractor-style named actor sets for broadcast and dispatch on a **single no
 - **`tasks::pg` / `threads::pg`** — typed `join`, `leave`, `members` for `ActorRef<A>` dispatch
 - **Auto-leave on exit** — actors removed from all groups when they stop
 - **Refcounted joins** — multiple joins require matching `leave` calls
+- **Integration tests** — [`pg_integration.rs`](../concurrency/tests/pg_integration.rs) covers tasks and threads (`cargo test -p spawned-concurrency --test pg_integration`)
 - **Example** — [`pg_workers`](../examples/pg_workers)
 
 **Deferred from process groups MVP:**

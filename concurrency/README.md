@@ -59,6 +59,21 @@ let sup = Supervisor::builder()
 
 See the [Supervision Guide](https://github.com/lambdaclass/spawned/blob/main/docs/SUPERVISION.md) for restart strategies, shutdown escalation, meltdown, and when to use `DynamicSupervisor`.
 
+## Process Groups
+
+Named actor sets for broadcast and dispatch. Use `tasks::pg` or `threads::pg` with the same API:
+
+```ignore
+use spawned_concurrency::tasks::pg;
+
+pg::join("pool", &ctx.actor_ref());
+for worker in pg::members::<Worker>("pool") {
+    worker.send(Ping)?;
+}
+```
+
+See the [API Guide — Process Groups](https://github.com/lambdaclass/spawned/blob/main/docs/API-GUIDE.md#process-groups) and [`pg_workers`](../examples/pg_workers).
+
 ## Two Execution Modes
 
 - **tasks**: async/await with tokio. Use `spawned_concurrency::tasks`.
