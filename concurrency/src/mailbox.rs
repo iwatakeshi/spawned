@@ -55,6 +55,22 @@ impl MailboxConfig {
     }
 }
 
+/// System-priority item on the actor system channel.
+#[derive(Debug, Clone)]
+pub(crate) enum SystemItem {
+    Exit(Exit),
+    Shutdown,
+}
+
+impl SystemItem {
+    fn into_mailbox_item<M>(self) -> MailboxItem<M> {
+        match self {
+            SystemItem::Exit(exit) => MailboxItem::Exit(exit),
+            SystemItem::Shutdown => MailboxItem::Shutdown,
+        }
+    }
+}
+
 /// Internal mailbox item used uniformly in both `tasks` and `threads` actor loops.
 pub(crate) enum MailboxItem<M> {
     Message(M),
@@ -66,6 +82,151 @@ pub(crate) enum MailboxItem<M> {
 pub(crate) enum MailboxRuntime {
     Tasks,
     Threads,
+}
+
+/// Cloneable send handles for an actor mailbox (tasks mode).
+pub(crate) struct TasksMailboxSender<M> {
+    pub user: spawned_rt::tasks::mpsc::Sender<M>,
+    pub system: spawned_rt::tasks::mpsc::Sender<SystemItem>,
+}
+
+impl<M> Clone for TasksMailboxSender<M> {
+    fn clone(&self) -> Self {
+        Self {
+            user: self.user.clone(),
+            system: self.system.clone(),
+        }
+    }
+}
+
+/// Receive side for an actor mailbox (tasks mode).
+pub(crate) struct TasksMailboxReceiver<M> {
+    user: spawned_rt::tasks::mpsc::Receiver<M>,
+    system: spawned_rt::tasks::mpsc::Receiver<SystemItem>,
+    user_closed: bool,
+    system_closed: bool,
+}
+
+impl<M> TasksMailboxReceiver<M> {
+    pub fn channel() -> (TasksMailboxSender<M>, Self) {
+        let (user_tx, user_rx) = spawned_rt::tasks::mpsc::channel();
+        let (system_tx, system_rx) = spawned_rt::tasks::mpsc::channel();
+        (
+            TasksMailboxSender {
+                user: user_tx,
+                system: system_tx,
+            },
+            Self {
+                user: user_rx,
+                system: system_rx,
+                user_closed: false,
+                system_closed: false,
+            },
+        )
+    }
+
+    pub async fn recv(&mut self) -> Option<MailboxItem<M>> {
+        loop {
+            if self.system_closed && self.user_closed {
+                return None;
+            }
+            spawned_rt::tasks::select! {
+                biased;
+                item = self.system.recv(), if !self.system_closed => {
+                    match item {
+                        Some(item) => return Some(item.into_mailbox_item()),
+                        None => self.system_closed = true,
+                    }
+                },
+                item = self.user.recv(), if !self.user_closed => {
+                    match item {
+                        Some(item) => return Some(MailboxItem::Message(item)),
+                        None => self.user_closed = true,
+                    }
+                },
+            }
+        }
+    }
+}
+
+/// Cloneable send handles for an actor mailbox (threads mode).
+pub(crate) struct ThreadsMailboxSender<M> {
+    pub user: spawned_rt::threads::crossbeam_channel::Sender<M>,
+    pub system: spawned_rt::threads::crossbeam_channel::Sender<SystemItem>,
+}
+
+impl<M> Clone for ThreadsMailboxSender<M> {
+    fn clone(&self) -> Self {
+        Self {
+            user: self.user.clone(),
+            system: self.system.clone(),
+        }
+    }
+}
+
+/// Receive side for an actor mailbox (threads mode).
+pub(crate) struct ThreadsMailboxReceiver<M> {
+    user: spawned_rt::threads::crossbeam_channel::Receiver<M>,
+    system: spawned_rt::threads::crossbeam_channel::Receiver<SystemItem>,
+    user_closed: bool,
+    system_closed: bool,
+}
+
+impl<M> ThreadsMailboxReceiver<M> {
+    pub fn channel() -> (ThreadsMailboxSender<M>, Self) {
+        let (user_tx, user_rx) = spawned_rt::threads::crossbeam_channel::unbounded();
+        let (system_tx, system_rx) = spawned_rt::threads::crossbeam_channel::unbounded();
+        (
+            ThreadsMailboxSender {
+                user: user_tx,
+                system: system_tx,
+            },
+            Self {
+                user: user_rx,
+                system: system_rx,
+                user_closed: false,
+                system_closed: false,
+            },
+        )
+    }
+
+    pub fn recv(&mut self) -> Option<MailboxItem<M>> {
+        use spawned_rt::threads::crossbeam_channel::{select, TryRecvError};
+
+        loop {
+            if self.system_closed && self.user_closed {
+                return None;
+            }
+            if !self.system_closed {
+                match self.system.try_recv() {
+                    Ok(item) => return Some(item.into_mailbox_item()),
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => self.system_closed = true,
+                }
+            }
+            if !self.user_closed {
+                match self.user.try_recv() {
+                    Ok(item) => return Some(MailboxItem::Message(item)),
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => self.user_closed = true,
+                }
+            }
+            if self.system_closed && self.user_closed {
+                return None;
+            }
+
+            select! {
+                recv(self.system) -> msg => match msg {
+                    Ok(item) => return Some(item.into_mailbox_item()),
+                    Err(_) => self.system_closed = true,
+                },
+                recv(self.user) -> msg => match msg {
+                    Ok(item) => return Some(MailboxItem::Message(item)),
+                    Err(_) => self.user_closed = true,
+                },
+            }
+        }
+    }
 }
 
 /// Shared depth counter and block waiters for user message backpressure.
@@ -205,7 +366,7 @@ impl MailboxLimits {
     /// Enqueue a user message, applying capacity limits.
     pub fn send_user_threads<M>(
         &self,
-        sender: &spawned_rt::threads::mpsc::Sender<M>,
+        sender: &spawned_rt::threads::crossbeam_channel::Sender<M>,
         item: M,
     ) -> Result<(), ActorError> {
         match (self.capacity, self.mode) {
@@ -244,20 +405,20 @@ impl MailboxLimits {
         })
     }
 
-    /// Enqueue a system item (`Exit` or `Shutdown`); never subject to user limits.
-    pub fn send_system_threads<M>(
+    /// Enqueue a system item; never subject to user limits.
+    pub fn send_system_threads(
         &self,
-        sender: &spawned_rt::threads::mpsc::Sender<M>,
-        item: M,
+        sender: &spawned_rt::threads::crossbeam_channel::Sender<SystemItem>,
+        item: SystemItem,
     ) -> Result<(), ActorError> {
         sender.send(item).map_err(|_| ActorError::ActorStopped)
     }
 
-    /// Enqueue a system item (`Exit` or `Shutdown`); never subject to user limits.
-    pub fn send_system_tasks<M>(
+    /// Enqueue a system item; never subject to user limits.
+    pub fn send_system_tasks(
         &self,
-        sender: &spawned_rt::tasks::mpsc::Sender<M>,
-        item: M,
+        sender: &spawned_rt::tasks::mpsc::Sender<SystemItem>,
+        item: SystemItem,
     ) -> Result<(), ActorError> {
         sender.send(item).map_err(|_| ActorError::ActorStopped)
     }
@@ -282,5 +443,18 @@ mod tests {
         let limits = MailboxLimits::new(MailboxConfig::bounded(1), MailboxRuntime::Threads);
         limits.try_acquire().unwrap();
         assert!(matches!(limits.try_acquire(), Err(ActorError::MailboxFull)));
+    }
+
+    #[test]
+    fn threads_system_recv_before_user() {
+        let (tx, rx) = ThreadsMailboxReceiver::<u32>::channel();
+        tx.user.send(1).unwrap();
+        tx.user.send(2).unwrap();
+        tx.system.send(SystemItem::Shutdown).unwrap();
+
+        let mut rx = rx;
+        assert!(matches!(rx.recv(), Some(MailboxItem::Shutdown)));
+        assert!(matches!(rx.recv(), Some(MailboxItem::Message(1))));
+        assert!(matches!(rx.recv(), Some(MailboxItem::Message(2))));
     }
 }

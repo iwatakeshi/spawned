@@ -5,6 +5,7 @@ pub use tokio::sync::watch;
 
 pub use tokio::{
     runtime::{Handle, Runtime, RuntimeFlavor},
+    select,
     sync::Notify,
     task::{block_in_place, id as task_id, spawn, spawn_blocking, JoinHandle},
     time::{sleep, timeout},

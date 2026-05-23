@@ -194,6 +194,8 @@ let d = MyActor::new().start_with_backend_and_mailbox(
 
 **System messages bypass limits:** `Exit` (link propagation) and `Shutdown` (cancellation) always enqueue immediately, even when the mailbox is full. Supervised actors started via `.start()` remain unbounded by default.
 
+**System-priority dequeue:** When both user and system channels have pending items, the actor processes system items first. A linked child death or cancellation therefore reaches a trapping supervisor before queued user messages are handled — even when the user mailbox is backlogged. User messages among themselves remain FIFO.
+
 **Block mode in tasks mode:** Sync `send()` from within an async runtime uses `block_in_place` internally to wait for capacity. Prefer calling from a blocking thread or dedicated task when possible.
 
 **Observability:** `actor_ref.mailbox_depth()` returns the current queued depth; `actor_ref.mailbox_capacity()` returns `Some(n)` for bounded mailboxes or `None` when unbounded.

@@ -54,6 +54,8 @@ Workers default to `Timeout(5s)` via `DEFAULT_WORKER_SHUTDOWN`. Use `.with_shutd
 
 For load-sensitive workers, cap mailbox depth with `.with_mailbox(MailboxConfig::bounded(n))` on the child spec (static or dynamic supervisor). Default remains unbounded; restarts inherit the spec's mailbox config.
 
+**Exit delivery priority:** Link-propagated `Exit` messages bypass user mailbox backpressure (Phase 6b) and are dequeued before queued user messages (Phase 6.3). Supervisors with `trap_exit(true)` see child deaths promptly even under load.
+
 ```rust
 use spawned_concurrency::MailboxConfig;
 

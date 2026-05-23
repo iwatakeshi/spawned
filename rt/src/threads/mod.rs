@@ -3,6 +3,8 @@
 pub mod mpsc;
 pub mod oneshot;
 
+pub use crossbeam_channel;
+
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc as std_mpsc, Arc, Mutex, OnceLock,

@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after production mailboxes (Phase 6.2).
+**Last updated:** after priority system dequeue (Phase 6.3).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -143,13 +143,23 @@ Wire bounded mailboxes into supervision and observability for load-safe dispatch
 - **`start_linked_with_mailbox`** — linked child startup with mailbox policy
 - **Examples** — [`mailbox_backpressure`](../examples/mailbox_backpressure), [`http_workers`](../examples/http_workers)
 
+### 6d. Priority system dequeue — ✅
+
+Split each actor mailbox into separate user and system channels so `Exit` and `Shutdown` are dequeued before queued user messages (complements 6b send-bypass).
+
+**Shipped:**
+
+- **Dual-channel mailbox** — user messages and system items (`Exit`, `Shutdown`) on separate internal channels (tasks + threads)
+- **Priority receive** — tasks use biased `select!`; threads use crossbeam `try_recv` + `select!`
+- **No public API change** — priority is always on
+
 **Deferred from production mailboxes:**
 
 | Item | Notes |
 |------|-------|
 | **Default bounded mailbox for workers** | `ChildSpec::worker()` still defaults to unbounded; opt in via `.with_mailbox()` |
 | **Dropping / sliding buffers** | Only fixed capacity with fail-fast or block |
-| **Priority reordering** | Stop/Exit share the channel FIFO with user messages |
+| **Configurable FIFO mode** | `MailboxConfig::fifo()` to disable system priority |
 
 ## Future Considerations
 
@@ -157,7 +167,7 @@ Wire bounded mailboxes into supervision and observability for load-safe dispatch
 |---------|-------|
 | pg scopes and group monitors | Deferred from local pg MVP (see above) |
 | Distributed process groups | Requires clustering first |
-| Priority message channels | Signal > Stop > Supervision > Message |
+| Priority message channels | Signal > Stop > Supervision > Message (partial: Stop/Exit dequeue before user messages in 6d) |
 | State machines (`gen_statem`) | Protocol implementations |
 | Backoff strategies | Built into supervision |
 | Persistence / event sourcing | Akka Persistence pattern |

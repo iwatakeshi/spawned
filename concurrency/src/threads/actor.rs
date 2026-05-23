@@ -1,6 +1,4 @@
-use spawned_rt::threads::{
-    self as rt, mpsc, oneshot, oneshot::RecvTimeoutError, CancellationToken,
-};
+use spawned_rt::threads::{self as rt, oneshot, oneshot::RecvTimeoutError, CancellationToken};
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -21,7 +19,10 @@ use crate::link::{
     self, new_link_table, new_linked_exit_reason, new_trap_exit_flag, Exit, LinkTable,
     LinkedExitReason, SendExitFn, TrapExitFlag,
 };
-use crate::mailbox::{MailboxConfig, MailboxItem, MailboxLimits, MailboxRuntime};
+use crate::mailbox::{
+    MailboxConfig, MailboxItem, MailboxLimits, MailboxRuntime, SystemItem, ThreadsMailboxReceiver,
+    ThreadsMailboxSender,
+};
 use crate::message::Message;
 use crate::monitor::{Down, MonitorRef};
 use crate::pg;
@@ -89,6 +90,8 @@ where
     }
 }
 
+type UserEnvelope<A> = Box<dyn Envelope<A> + Send>;
+
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
@@ -99,7 +102,7 @@ where
 /// Clone is cheap — it clones the inner channel sender and cancellation token.
 pub struct Context<A: Actor> {
     id: ActorId,
-    sender: mpsc::Sender<MailboxItem<Box<dyn Envelope<A> + Send>>>,
+    mailbox: ThreadsMailboxSender<UserEnvelope<A>>,
     cancellation_token: CancellationToken,
     completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
     monitors: MonitorTable,
@@ -115,7 +118,7 @@ impl<A: Actor> Clone for Context<A> {
     fn clone(&self) -> Self {
         Self {
             id: self.id,
-            sender: self.sender.clone(),
+            mailbox: self.mailbox.clone(),
             cancellation_token: self.cancellation_token.clone(),
             completion: self.completion.clone(),
             monitors: self.monitors.clone(),
@@ -141,7 +144,7 @@ impl<A: Actor> Context<A> {
     pub fn from_ref(actor_ref: &ActorRef<A>) -> Self {
         Self {
             id: actor_ref.id,
-            sender: actor_ref.sender.clone(),
+            mailbox: actor_ref.mailbox.clone(),
             cancellation_token: actor_ref.cancellation_token.clone(),
             completion: actor_ref.completion.clone(),
             monitors: actor_ref.monitors.clone(),
@@ -173,7 +176,7 @@ impl<A: Actor> Context<A> {
     {
         let envelope = MessageEnvelope { msg, tx: None };
         self.mailbox_limits
-            .send_user_threads(&self.sender, MailboxItem::Message(Box::new(envelope)))
+            .send_user_threads(&self.mailbox.user, Box::new(envelope))
     }
 
     /// Send a request and get a raw oneshot receiver for the reply.
@@ -185,7 +188,7 @@ impl<A: Actor> Context<A> {
         let (tx, rx) = oneshot::channel();
         let envelope = MessageEnvelope { msg, tx: Some(tx) };
         self.mailbox_limits
-            .send_user_threads(&self.sender, MailboxItem::Message(Box::new(envelope)))?;
+            .send_user_threads(&self.mailbox.user, Box::new(envelope))?;
         Ok(rx)
     }
 
@@ -230,7 +233,7 @@ impl<A: Actor> Context<A> {
     pub fn actor_ref(&self) -> ActorRef<A> {
         ActorRef {
             id: self.id,
-            sender: self.sender.clone(),
+            mailbox: self.mailbox.clone(),
             cancellation_token: self.cancellation_token.clone(),
             completion: self.completion.clone(),
             monitors: self.monitors.clone(),
@@ -389,9 +392,9 @@ impl<A: Actor> Context<A> {
 
     /// Build a type-erased `SendExitFn` that enqueues an `Exit` mailbox item.
     fn own_send_exit_fn(&self) -> SendExitFn {
-        let sender = self.sender.clone();
+        let system = self.mailbox.system.clone();
         let limits = self.mailbox_limits.clone();
-        Arc::new(move |exit: Exit| limits.send_system_threads(&sender, MailboxItem::Exit(exit)))
+        Arc::new(move |exit: Exit| limits.send_system_threads(&system, SystemItem::Exit(exit)))
     }
 
     pub(crate) fn cancellation_token(&self) -> CancellationToken {
@@ -472,7 +475,7 @@ impl Drop for CompletionGuard {
 /// or call [`Context::stop`] from within a handler.
 pub struct ActorRef<A: Actor> {
     id: ActorId,
-    sender: mpsc::Sender<MailboxItem<Box<dyn Envelope<A> + Send>>>,
+    mailbox: ThreadsMailboxSender<UserEnvelope<A>>,
     cancellation_token: CancellationToken,
     completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
     monitors: MonitorTable,
@@ -494,7 +497,7 @@ impl<A: Actor> Clone for ActorRef<A> {
     fn clone(&self) -> Self {
         Self {
             id: self.id,
-            sender: self.sender.clone(),
+            mailbox: self.mailbox.clone(),
             cancellation_token: self.cancellation_token.clone(),
             completion: self.completion.clone(),
             monitors: self.monitors.clone(),
@@ -517,7 +520,7 @@ impl<A: Actor> ActorRef<A> {
     {
         let envelope = MessageEnvelope { msg, tx: None };
         self.mailbox_limits
-            .send_user_threads(&self.sender, MailboxItem::Message(Box::new(envelope)))
+            .send_user_threads(&self.mailbox.user, Box::new(envelope))
     }
 
     /// Send a request and get a raw oneshot receiver for the reply.
@@ -529,7 +532,7 @@ impl<A: Actor> ActorRef<A> {
         let (tx, rx) = oneshot::channel();
         let envelope = MessageEnvelope { msg, tx: Some(tx) };
         self.mailbox_limits
-            .send_user_threads(&self.sender, MailboxItem::Message(Box::new(envelope)))?;
+            .send_user_threads(&self.mailbox.user, Box::new(envelope))?;
         Ok(rx)
     }
 
@@ -621,11 +624,10 @@ impl<A: Actor> ActorRef<A> {
 
 impl<A: Actor> From<ActorRef<A>> for ChildHandle {
     fn from(actor_ref: ActorRef<A>) -> Self {
-        let sender = actor_ref.sender.clone();
+        let system = actor_ref.mailbox.system.clone();
         let limits = actor_ref.mailbox_limits.clone();
-        let send_exit: SendExitFn = Arc::new(move |exit: Exit| {
-            limits.send_system_threads(&sender, MailboxItem::Exit(exit))
-        });
+        let send_exit: SendExitFn =
+            Arc::new(move |exit: Exit| limits.send_system_threads(&system, SystemItem::Exit(exit)));
         ChildHandle::from_threads(
             actor_ref.id,
             Arc::new(move || actor_ref.cancellation_token.cancel()),
@@ -661,13 +663,13 @@ where
 
 impl<A: Actor> ActorRef<A> {
     fn spawn(actor: A, mailbox: MailboxConfig) -> Self {
-        let (tx, rx) = mpsc::channel::<MailboxItem<Box<dyn Envelope<A> + Send>>>();
+        let (mailbox_sender, rx) = ThreadsMailboxReceiver::<UserEnvelope<A>>::channel();
         let mailbox_limits = MailboxLimits::new(mailbox, MailboxRuntime::Threads);
         let cancellation_token = CancellationToken::new();
-        let tx_shutdown = tx.clone();
+        let system_shutdown = mailbox_sender.system.clone();
         let limits_shutdown = mailbox_limits.clone();
         cancellation_token.on_cancel(Box::new(move || {
-            let _ = limits_shutdown.send_system_threads(&tx_shutdown, MailboxItem::Shutdown);
+            let _ = limits_shutdown.send_system_threads(&system_shutdown, SystemItem::Shutdown);
         }));
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let id = ActorId::next();
@@ -680,7 +682,7 @@ impl<A: Actor> ActorRef<A> {
 
         let actor_ref = ActorRef {
             id,
-            sender: tx.clone(),
+            mailbox: mailbox_sender.clone(),
             cancellation_token: cancellation_token.clone(),
             completion: completion.clone(),
             monitors: monitors.clone(),
@@ -694,7 +696,7 @@ impl<A: Actor> ActorRef<A> {
 
         let ctx = Context {
             id,
-            sender: tx,
+            mailbox: mailbox_sender,
             cancellation_token: cancellation_token.clone(),
             completion: actor_ref.completion.clone(),
             monitors,
@@ -735,7 +737,7 @@ impl<A: Actor> ActorRef<A> {
 fn run_actor<A: Actor>(
     mut actor: A,
     ctx: Context<A>,
-    rx: mpsc::Receiver<MailboxItem<Box<dyn Envelope<A> + Send>>>,
+    mut rx: ThreadsMailboxReceiver<UserEnvelope<A>>,
     mailbox_limits: Arc<MailboxLimits>,
     cancellation_token: CancellationToken,
     requested_exit: RequestedExitReason,
@@ -763,8 +765,8 @@ fn run_actor<A: Actor>(
 
     loop {
         let item = match rx.recv() {
-            Ok(item) => item,
-            Err(_) => break,
+            Some(item) => item,
+            None => break,
         };
         match item {
             MailboxItem::Message(envelope) => {
@@ -1501,7 +1503,9 @@ mod tests {
     }
 
     impl Handler<Ping> for FifoOrderActor {
-        fn handle(&mut self, _msg: Ping, _ctx: &Context<Self>) {}
+        fn handle(&mut self, _msg: Ping, _ctx: &Context<Self>) {
+            self.order.lock().unwrap().push("ping");
+        }
     }
 
     #[test]
@@ -1742,7 +1746,96 @@ mod tests {
 
         rt::sleep(Duration::from_millis(100));
         let recorded = actor.request(GetOrder).unwrap();
-        assert_eq!(recorded, vec!["msg", "exit"]);
+        assert_eq!(recorded, vec!["msg", "exit", "ping"]);
+
+        let handle = actor.child_handle();
+        handle.stop();
+        handle.wait_exit_blocking();
+    }
+
+    #[test]
+    fn exit_jumps_queued_user_messages_threads() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let actor = FifoOrderActor {
+            order,
+            gate: gate.clone(),
+        }
+        .start();
+
+        let child = Stoppable.start();
+        actor.request(LinkChild(child.child_handle())).unwrap();
+
+        actor.send(GatedWork).unwrap();
+        rt::sleep(Duration::from_millis(50));
+
+        actor.send(Ping).unwrap();
+        actor.send(Ping).unwrap();
+        actor.send(Ping).unwrap();
+
+        child.request(StopNow).unwrap();
+
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+
+        rt::sleep(Duration::from_millis(100));
+        let recorded = actor.request(GetOrder).unwrap();
+        assert_eq!(recorded, vec!["msg", "exit", "ping", "ping", "ping"]);
+
+        let handle = actor.child_handle();
+        handle.stop();
+        handle.wait_exit_blocking();
+    }
+
+    #[test]
+    fn shutdown_before_queued_user_messages_threads() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let actor = FifoOrderActor {
+            order: order.clone(),
+            gate: gate.clone(),
+        }
+        .start();
+
+        actor.send(GatedWork).unwrap();
+        rt::sleep(Duration::from_millis(50));
+
+        actor.send(Ping).unwrap();
+        actor.send(Ping).unwrap();
+        actor.send(Ping).unwrap();
+
+        let handle = actor.child_handle();
+        handle.stop();
+        rt::sleep(Duration::from_millis(50));
+
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+
+        handle.wait_exit_blocking();
+
+        let recorded = order.lock().unwrap();
+        assert!(!recorded.contains(&"ping"));
+    }
+
+    #[test]
+    fn user_message_order_preserved_threads() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new((Mutex::new(true), Condvar::new()));
+        let actor = FifoOrderActor { order, gate }.start();
+
+        actor.send(Ping).unwrap();
+        actor.send(Ping).unwrap();
+        actor.send(Ping).unwrap();
+
+        rt::sleep(Duration::from_millis(100));
+        let recorded = actor.request(GetOrder).unwrap();
+        assert_eq!(recorded, vec!["ping", "ping", "ping"]);
 
         let handle = actor.child_handle();
         handle.stop();
