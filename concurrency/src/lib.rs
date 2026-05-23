@@ -5,6 +5,7 @@
 //! - [`tasks`] — async actor runtime (requires tokio)
 //! - [`threads`] — blocking actor runtime (native OS threads)
 //! - [`registry`] — global name-based actor registry
+//! - [`pg`] — Erlang-style process groups for broadcast and dispatch
 //! - [`response`] — `Response<T>` unified wrapper for request-response
 //! - [`error`] — `ActorError` and `ExitReason` types
 //! - [`message`] — `Message` trait for defining message types
@@ -37,6 +38,7 @@ pub(crate) mod exit_request;
 pub mod link;
 pub mod message;
 pub mod monitor;
+pub mod pg;
 pub mod registry;
 pub mod response;
 pub mod supervisor;
@@ -52,6 +54,7 @@ pub use dynamic_supervisor::{DynamicChildInfo, DynamicSupervisorError};
 pub use error::{ActorError, ExitReason};
 pub use link::Exit;
 pub use monitor::{Down, MonitorRef};
+pub use pg::PgError;
 pub use response::Response;
 pub use supervisor::SupervisorStrategy;
 pub use spawned_macros::{actor, protocol};

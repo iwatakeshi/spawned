@@ -23,6 +23,7 @@ use crate::link::{
 };
 use crate::message::Message;
 use crate::monitor::{Down, MonitorRef};
+use crate::pg;
 
 /// Per-actor table of active monitors. Each entry maps a `MonitorRef` to a
 /// flag the watcher checks before delivering `Down`. Shared across `Context`
@@ -731,6 +732,7 @@ impl<A: Actor> ActorRef<A> {
                 skip_stopped,
             );
             link::propagate_exit(id, &links, &reason);
+            pg::remove_actor(id);
             guard.reason = Some(reason);
         });
 

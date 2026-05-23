@@ -7,6 +7,7 @@ use crate::link::{
     self, new_link_table, new_linked_exit_reason, new_trap_exit_flag, Exit, LinkTable,
     LinkedExitReason, SendExitFn, TrapExitFlag,
 };
+use crate::pg;
 use crate::message::Message;
 use crate::monitor::{Down, MonitorRef};
 use core::pin::pin;
@@ -748,6 +749,7 @@ impl<A: Actor> ActorRef<A> {
             )
             .await;
             link::propagate_exit(actor_id, &links, &reason);
+            pg::remove_actor(actor_id);
             let _ = completion_tx.send(Some(reason));
         };
 

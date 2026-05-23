@@ -1,5 +1,6 @@
 pub(crate) mod actor;
 pub mod dynamic_supervisor;
+pub mod pg;
 mod stream;
 mod supervisor;
 mod time;
