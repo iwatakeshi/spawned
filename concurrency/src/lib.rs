@@ -75,6 +75,7 @@
 //! - [`tasks::Backend`] enum for choosing async runtime, blocking pool, or OS thread
 
 pub mod child_handle;
+pub mod child_spec;
 pub mod error;
 pub(crate) mod exit_request;
 pub mod link;
@@ -86,6 +87,9 @@ pub mod tasks;
 pub mod threads;
 
 pub use child_handle::{ActorId, ChildHandle};
+pub use child_spec::{
+    should_restart, ChildType, RestartIntensity, RestartType, ShutdownType,
+};
 pub use error::{ActorError, ExitReason};
 pub use link::Exit;
 pub use monitor::{Down, MonitorRef};
