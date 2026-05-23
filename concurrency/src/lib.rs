@@ -54,6 +54,7 @@ pub use child_spec::{
 pub use dynamic_supervisor::{DynamicChildInfo, DynamicSupervisorError};
 pub use error::{ActorError, ExitReason};
 pub use link::Exit;
+pub use mailbox::{BackpressureMode, MailboxConfig};
 pub use monitor::{Down, MonitorRef};
 pub use pg::PgError;
 pub use response::Response;

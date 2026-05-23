@@ -8,6 +8,7 @@ Complete reference for the spawned actor framework. For a quick introduction, se
 - [Context](#context)
 - [ActorRef](#actorref)
 - [Backend Selection (tasks mode)](#backend-selection-tasks-mode)
+- [Mailbox configuration](#mailbox-configuration)
 - [Timers](#timers)
 - [send\_message\_on](#send_message_on)
 - [spawn\_listener](#spawn_listener)
@@ -123,7 +124,12 @@ let actor_ref = MyActor::new().start();
 
 // tasks mode: choose a backend
 let actor_ref = MyActor::new().start_with_backend(Backend::Thread);
+
+// bounded mailbox (fail-fast or blocking backpressure)
+let actor_ref = MyActor::new().start_with_mailbox(MailboxConfig::bounded(100));
 ```
+
+See [Mailbox configuration](#mailbox-configuration) for backpressure modes and system-message bypass.
 
 ---
 
@@ -149,6 +155,44 @@ let c = MyActor::new().start_with_backend(Backend::Thread);
 ```
 
 `Backend::Async` will emit a tracing warning (debug builds only) if a poll takes longer than 10ms — use `Backend::Blocking` or `Backend::Thread` for slow work.
+
+---
+
+## Mailbox configuration
+
+By default, actors accept an unlimited number of queued user messages. For load-sensitive workloads (HTTP dispatch, worker pools), you can cap the mailbox depth and choose how senders behave when the limit is reached.
+
+```rust
+use spawned_concurrency::{BackpressureMode, MailboxConfig};
+use spawned_concurrency::tasks::ActorStart as _;
+
+// Default — unbounded (same as .start())
+let a = MyActor::new().start_with_mailbox(MailboxConfig::unbounded());
+
+// Bounded, fail fast when full
+let b = MyActor::new().start_with_mailbox(MailboxConfig::bounded(100));
+
+// Bounded, block senders until space is available
+let c = MyActor::new().start_with_mailbox(MailboxConfig::bounded_blocking(100));
+
+// tasks mode: combine backend + mailbox
+let d = MyActor::new().start_with_backend_and_mailbox(
+    Backend::Thread,
+    MailboxConfig::bounded(50),
+);
+```
+
+| Config | Behavior when at capacity |
+|--------|---------------------------|
+| `MailboxConfig::unbounded()` | No limit (default for `.start()`) |
+| `MailboxConfig::bounded(n)` | `send()` / `request()` return `Err(ActorError::MailboxFull)` |
+| `MailboxConfig::bounded_blocking(n)` | `send()` / `request()` wait until a queued message is dequeued |
+
+**Depth semantics:** The counter tracks **queued** user messages only. When the actor dequeues a message (before the handler runs), depth decreases and blocked senders are woken. A message currently being handled does not count toward the limit.
+
+**System messages bypass limits:** `Exit` (link propagation) and `Shutdown` (cancellation) always enqueue immediately, even when the mailbox is full. Supervised actors started via `.start()` remain unbounded by default.
+
+**Block mode in tasks mode:** Sync `send()` from within an async runtime uses `block_in_place` internally to wait for capacity. Prefer calling from a blocking thread or dedicated task when possible.
 
 ---
 
@@ -715,6 +759,7 @@ impl Message for GetCount {
 pub enum ActorError {
     ActorStopped,
     RequestTimeout,
+    MailboxFull,   // bounded mailbox at capacity (FailFast mode)
 }
 ```
 

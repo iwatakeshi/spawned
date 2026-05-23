@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after threads process groups integration tests.
+**Last updated:** after mailbox buffer strategies (Phase 6.1).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -112,6 +112,34 @@ Erlang/Ractor-style named actor sets for broadcast and dispatch on a **single no
 - [Supervision guide](SUPERVISION.md) — static/dynamic supervisors, restart/shutdown, meltdown
 - Doc tests in crate READMEs ([#137](https://github.com/lambdaclass/spawned/issues/137)) — README examples tested via `cargo test --doc`
 - Process groups API reference in [API-GUIDE](API-GUIDE.md#process-groups)
+
+## Phase 6: Production Hardening — in progress
+
+### 6a. Unified mailbox channel — ✅
+
+Single `MailboxItem` enum (`Message`, `Exit`, `Shutdown`) for both tasks and threads mode actor loops.
+
+### 6b. Mailbox buffer strategies — ✅
+
+Configurable backpressure for user messages only; system items (`Exit`, `Shutdown`) bypass limits.
+
+**Shipped:**
+
+- **`MailboxConfig`** — `unbounded()` (default), `bounded(n)` (fail-fast), `bounded_blocking(n)` (block senders)
+- **`BackpressureMode`** — `FailFast` | `Block`
+- **`ActorError::MailboxFull`** — returned when a bounded mailbox is full in fail-fast mode
+- **Start API** — `start_with_mailbox(config)` (tasks + threads); `start_with_backend_and_mailbox(backend, config)` (tasks)
+- **Counter-based limits** — depth tracked on dequeue; no change to underlying unbounded mpsc channels
+- **API reference** — [Mailbox configuration](API-GUIDE.md#mailbox-configuration)
+
+**Deferred from buffer strategies MVP:**
+
+| Item | Notes |
+|------|-------|
+| **Dropping / sliding buffers** | Only fixed capacity with fail-fast or block |
+| **Mailbox depth observability** | No `ActorRef::mailbox_depth()` yet |
+| **Supervisor defaults** | Supervised children still start with unbounded mailboxes |
+| **Priority reordering** | Stop/Exit share the channel FIFO with user messages |
 
 ## Future Considerations
 

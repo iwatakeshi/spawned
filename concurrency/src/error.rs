@@ -61,6 +61,12 @@ pub enum ActorError {
     /// does not reply in time.
     #[error("Request to Actor timed out")]
     RequestTimeout,
+    /// The actor's mailbox has reached its configured capacity.
+    ///
+    /// Returned by `send()` and `request_raw()` when the mailbox uses
+    /// [`BackpressureMode::FailFast`](crate::BackpressureMode::FailFast) and is full.
+    #[error("Actor mailbox is full")]
+    MailboxFull,
 }
 
 impl<T> From<spawned_rt::threads::mpsc::SendError<T>> for ActorError {

@@ -17,6 +17,7 @@ pub use crate::tasks::tokio::sleep;
 pub use crate::tasks::tokio::timeout;
 pub use crate::tasks::tokio::watch;
 pub use crate::tasks::tokio::CancellationToken;
+pub use crate::tasks::tokio::Notify;
 pub use crate::tasks::tokio::{
     block_in_place, spawn, spawn_blocking, task_id, Handle, JoinHandle, Runtime, RuntimeFlavor,
 };
