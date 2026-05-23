@@ -1,5 +1,6 @@
 pub(crate) mod actor;
 mod stream;
+mod supervisor;
 mod time;
 
 #[cfg(test)]
@@ -13,4 +14,5 @@ pub use actor::{
     Recipient, DEFAULT_REQUEST_TIMEOUT,
 };
 pub use stream::spawn_listener;
+pub use supervisor::{ChildSpec, Supervisor, SupervisorBuilder};
 pub use time::{send_after, send_interval, TimerHandle};
