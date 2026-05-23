@@ -50,6 +50,16 @@ pub struct ChildHandleSlot {
     pub alive: bool,
 }
 
+/// Summary of a supervised child for listing APIs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildInfo {
+    pub id: String,
+    pub actor_id: ActorId,
+    pub alive: bool,
+    pub restart: RestartType,
+    pub start_index: usize,
+}
+
 /// Tracks restart intensity within a sliding time window.
 #[derive(Debug, Clone)]
 pub struct IntensityTracker {
@@ -144,6 +154,77 @@ impl SupervisorLogic {
     pub fn child_id_by_actor(&self, actor_id: ActorId) -> Option<&str> {
         self.child_index_by_actor(actor_id)
             .map(|idx| self.children[idx].policy.id.as_str())
+    }
+
+    /// Resolve a child id by actor id, including children already marked dead.
+    pub fn child_id_by_actor_any(&self, actor_id: ActorId) -> Option<&str> {
+        self.children
+            .iter()
+            .find(|child| child.handle.is_some_and(|slot| slot.id == actor_id))
+            .map(|child| child.policy.id.as_str())
+    }
+
+    /// Number of children currently marked alive.
+    pub fn child_count(&self) -> usize {
+        self.children
+            .iter()
+            .filter(|child| child.handle.is_some_and(|slot| slot.alive))
+            .count()
+    }
+
+    /// List all registered children with liveness metadata.
+    pub fn list_children(&self) -> Vec<ChildInfo> {
+        self.children
+            .iter()
+            .filter_map(|child| {
+                let slot = child.handle?;
+                Some(ChildInfo {
+                    id: child.policy.id.clone(),
+                    actor_id: slot.id,
+                    alive: slot.alive,
+                    restart: child.policy.restart,
+                    start_index: child.policy.start_index,
+                })
+            })
+            .collect()
+    }
+
+    pub fn has_child_id(&self, id: &str) -> bool {
+        self.children
+            .iter()
+            .any(|child| child.policy.id == id)
+    }
+
+    /// Next start index for a dynamically added child.
+    pub fn next_start_index(&self) -> usize {
+        self.children
+            .iter()
+            .map(|child| child.policy.start_index)
+            .max()
+            .map(|index| index + 1)
+            .unwrap_or(0)
+    }
+
+    pub fn remove_child_by_id(&mut self, child_id: &str) -> bool {
+        let Some(index) = self
+            .children
+            .iter()
+            .position(|child| child.policy.id == child_id)
+        else {
+            return false;
+        };
+        self.children.remove(index);
+        true
+    }
+
+    pub fn remove_child_by_actor(&mut self, actor_id: ActorId) -> bool {
+        let Some(index) = self.children.iter().position(|child| {
+            child.handle.is_some_and(|slot| slot.id == actor_id)
+        }) else {
+            return false;
+        };
+        self.children.remove(index);
+        true
     }
 
     pub fn mark_child_dead(&mut self, actor_id: ActorId) {
@@ -451,6 +532,50 @@ mod tests {
         let ids = logic.take_pending_restart_ids().unwrap();
         assert_eq!(ids, vec![String::from("a"), String::from("b")]);
         assert!(!logic.suppress_restarts());
+    }
+
+    #[test]
+    fn child_count_list_remove_and_next_start_index() {
+        let mut logic = SupervisorLogic::new(
+            SupervisorStrategy::OneForOne,
+            RestartIntensity::default(),
+        );
+        let h0 = slot(1);
+        let h1 = slot(2);
+        logic.register_child(
+            ChildPolicy {
+                id: "a".into(),
+                restart: RestartType::Permanent,
+                start_index: 0,
+            },
+            h0,
+        );
+        logic.register_child(
+            ChildPolicy {
+                id: "b".into(),
+                restart: RestartType::Transient,
+                start_index: 3,
+            },
+            h1,
+        );
+
+        assert_eq!(logic.child_count(), 2);
+        assert!(logic.has_child_id("a"));
+        assert_eq!(logic.next_start_index(), 4);
+
+        let listed = logic.list_children();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, "a");
+        assert_eq!(listed[0].actor_id, h0.id);
+
+        logic.mark_child_dead(h0.id);
+        assert_eq!(logic.child_count(), 1);
+        assert_eq!(logic.child_id_by_actor_any(h0.id), Some("a"));
+
+        assert!(logic.remove_child_by_id("a"));
+        assert!(!logic.has_child_id("a"));
+        assert!(logic.remove_child_by_actor(h1.id));
+        assert!(logic.children.is_empty());
     }
 
     #[test]
