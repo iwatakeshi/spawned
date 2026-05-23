@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use spawned_concurrency::{
-    ChildHandle, ExitReason, RestartIntensity, RestartType, SupervisorStrategy,
+    shutdown_child_async, shutdown_child_blocking, ChildHandle, ExitReason, RestartIntensity,
+    RestartType, ShutdownType, SupervisorStrategy,
 };
 
 // ---------------------------------------------------------------------------
@@ -51,8 +52,9 @@ fn wait_until_all(counts: &StartCounts, ids: &[&str], at_least: u32, timeout: Du
 
 mod tasks {
     use super::*;
-    use spawned_concurrency::tasks::{Actor, ActorStart, ChildSpec, Context, Supervisor};
+    use spawned_concurrency::tasks::{Actor, ActorStart, ChildSpec, Context, Handler, Supervisor};
     use spawned_rt::tasks as rt;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct CountingWorker {
         id: String,
@@ -108,6 +110,53 @@ mod tasks {
 
     struct Idler;
     impl Actor for Idler {}
+
+    struct SlowStopper {
+        id: String,
+        counts: StartCounts,
+        stopped_ran: Arc<AtomicBool>,
+        delay: Duration,
+    }
+
+    impl Actor for SlowStopper {
+        async fn started(&mut self, _ctx: &Context<Self>) {
+            let mut map = self.counts.lock().unwrap_or_else(|p| p.into_inner());
+            *map.entry(self.id.clone()).or_insert(0) += 1;
+        }
+
+        async fn stopped(&mut self, _ctx: &Context<Self>) {
+            self.stopped_ran.store(true, Ordering::SeqCst);
+            rt::sleep(self.delay).await;
+        }
+    }
+
+    struct Block;
+
+    impl spawned_concurrency::message::Message for Block {
+        type Result = ();
+    }
+
+    /// Holds the mailbox in a long handler so shutdown timeout can escalate before `stopped()`.
+    struct StuckHandler {
+        id: String,
+        counts: StartCounts,
+        hold: Duration,
+    }
+
+    impl Actor for StuckHandler {
+        async fn started(&mut self, ctx: &Context<Self>) {
+            let mut map = self.counts.lock().unwrap_or_else(|p| p.into_inner());
+            *map.entry(self.id.clone()).or_insert(0) += 1;
+            drop(map);
+            let _ = ctx.send(Block);
+        }
+    }
+
+    impl Handler<Block> for StuckHandler {
+        async fn handle(&mut self, _msg: Block, _ctx: &Context<Self>) {
+            rt::sleep(self.hold).await;
+        }
+    }
 
     fn worker(
         id: &str,
@@ -327,15 +376,197 @@ mod tasks {
             let handle: ChildHandle = actor.child_handle();
 
             handle.shutdown();
-            assert_eq!(
-                handle.wait_exit_async().await,
-                ExitReason::Shutdown
-            );
+            assert_eq!(handle.wait_exit_async().await, ExitReason::Shutdown);
 
             let actor = Idler.start();
             let handle = actor.child_handle();
             handle.kill();
             assert_eq!(handle.wait_exit_async().await, ExitReason::Kill);
+        });
+    }
+
+    #[test]
+    fn worker_child_spec_defaults_to_otp_shutdown_timeout() {
+        let spec = ChildSpec::worker("w", || Idler, RestartType::Permanent);
+        assert_eq!(
+            spec.shutdown,
+            ShutdownType::Timeout(Duration::from_secs(5))
+        );
+    }
+
+    #[test]
+    fn shutdown_timeout_allows_fast_child_to_shutdown_gracefully() {
+        run(async {
+            let stopped_ran = Arc::new(AtomicBool::new(false));
+
+            let sup = Supervisor::builder()
+                .child(
+                    ChildSpec::worker(
+                        "fast",
+                        {
+                            let stopped_ran = stopped_ran.clone();
+                            move || SlowStopper {
+                                id: "fast".into(),
+                                counts: Arc::new(Mutex::new(HashMap::new())),
+                                stopped_ran: stopped_ran.clone(),
+                                delay: Duration::from_millis(10),
+                            }
+                        },
+                        RestartType::Permanent,
+                    )
+                    .with_shutdown(ShutdownType::Timeout(Duration::from_secs(1))),
+                )
+                .start();
+
+            rt::sleep(Duration::from_millis(50)).await;
+            sup.child_handle().stop();
+            sup.join().await;
+
+            assert!(stopped_ran.load(Ordering::SeqCst));
+        });
+    }
+
+    #[test]
+    fn shutdown_timeout_escalates_stuck_handler_to_kill() {
+        run(async {
+            let actor = StuckHandler {
+                id: "stuck".into(),
+                counts: Arc::new(Mutex::new(HashMap::new())),
+                hold: Duration::from_secs(5),
+            }
+            .start();
+            let handle = actor.child_handle();
+
+            rt::sleep(Duration::from_millis(20)).await;
+            let reason = shutdown_child_async(
+                &handle,
+                ShutdownType::Timeout(Duration::from_millis(50)),
+            )
+            .await;
+            assert_eq!(reason, ExitReason::Kill);
+        });
+    }
+
+    #[test]
+    fn supervisor_shutdown_escalates_stuck_child_to_kill() {
+        run(async {
+            let counts: StartCounts = Arc::new(Mutex::new(HashMap::new()));
+
+            let sup = Supervisor::builder()
+                .child(
+                    ChildSpec::worker(
+                        "stuck",
+                        {
+                            let counts = counts.clone();
+                            move || StuckHandler {
+                                id: "stuck".into(),
+                                counts: counts.clone(),
+                                hold: Duration::from_secs(5),
+                            }
+                        },
+                        RestartType::Permanent,
+                    )
+                    .with_shutdown(ShutdownType::Timeout(Duration::from_millis(50))),
+                )
+                .start();
+
+            rt::sleep(Duration::from_millis(20)).await;
+            sup.child_handle().stop();
+            sup.join().await;
+        });
+    }
+
+    #[test]
+    fn one_for_all_batch_terminate_escalates_stuck_child() {
+        run(async {
+            let counts: StartCounts = Arc::new(Mutex::new(HashMap::new()));
+
+            let sup = Supervisor::builder()
+                .strategy(SupervisorStrategy::OneForAll)
+                .intensity(RestartIntensity {
+                    max_restarts: 5,
+                    within: Duration::from_secs(10),
+                })
+                .child(
+                    ChildSpec::worker(
+                        "fast",
+                        worker("fast", counts.clone(), vec![0]),
+                        RestartType::Permanent,
+                    )
+                    .with_shutdown(ShutdownType::BrutalKill),
+                )
+                .child(
+                    ChildSpec::worker(
+                        "stuck",
+                        {
+                            let counts = counts.clone();
+                            move || StuckHandler {
+                                id: "stuck".into(),
+                                counts: counts.clone(),
+                                hold: Duration::from_millis(150),
+                            }
+                        },
+                        RestartType::Permanent,
+                    )
+                    .with_shutdown(ShutdownType::Timeout(Duration::from_millis(50))),
+                )
+                .start();
+
+            assert!(
+                wait_until_all(&counts, &["fast", "stuck"], 2, Duration::from_secs(2)),
+                "fast={}, stuck={}",
+                get_count(&counts, "fast"),
+                get_count(&counts, "stuck"),
+            );
+
+            sup.child_handle().stop();
+            sup.join().await;
+        });
+    }
+
+    #[test]
+    fn one_for_all_batch_terminate_restarts_all_children() {
+        run(async {
+            let counts: StartCounts = Arc::new(Mutex::new(HashMap::new()));
+
+            let sup = Supervisor::builder()
+                .strategy(SupervisorStrategy::OneForAll)
+                .intensity(RestartIntensity {
+                    max_restarts: 5,
+                    within: Duration::from_secs(10),
+                })
+                .child(ChildSpec::worker(
+                    "fast",
+                    worker("fast", counts.clone(), vec![0]),
+                    RestartType::Permanent,
+                ))
+                .child(
+                    ChildSpec::worker(
+                        "slow",
+                        {
+                            let counts = counts.clone();
+                            move || SlowStopper {
+                                id: "slow".into(),
+                                counts: counts.clone(),
+                                stopped_ran: Arc::new(AtomicBool::new(false)),
+                                delay: Duration::from_millis(10),
+                            }
+                        },
+                        RestartType::Permanent,
+                    )
+                    .with_shutdown(ShutdownType::BrutalKill),
+                )
+                .start();
+
+            assert!(
+                wait_until_all(&counts, &["fast", "slow"], 2, Duration::from_secs(3)),
+                "fast={}, slow={}",
+                get_count(&counts, "fast"),
+                get_count(&counts, "slow")
+            );
+
+            sup.child_handle().stop();
+            sup.join().await;
         });
     }
 }
@@ -346,7 +577,8 @@ mod tasks {
 
 mod threads {
     use super::*;
-    use spawned_concurrency::threads::{Actor, ActorStart, ChildSpec, Context, Supervisor};
+    use spawned_concurrency::threads::{Actor, ActorStart, ChildSpec, Context, Handler, Supervisor};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
 
     struct CountingWorker {
@@ -401,6 +633,52 @@ mod threads {
         }
     }
 
+    struct SlowStopper {
+        id: String,
+        counts: StartCounts,
+        stopped_ran: Arc<AtomicBool>,
+        delay: Duration,
+    }
+
+    impl Actor for SlowStopper {
+        fn started(&mut self, _ctx: &Context<Self>) {
+            let mut map = self.counts.lock().unwrap_or_else(|p| p.into_inner());
+            *map.entry(self.id.clone()).or_insert(0) += 1;
+        }
+
+        fn stopped(&mut self, _ctx: &Context<Self>) {
+            self.stopped_ran.store(true, Ordering::SeqCst);
+            thread::sleep(self.delay);
+        }
+    }
+
+    struct Block;
+
+    impl spawned_concurrency::message::Message for Block {
+        type Result = ();
+    }
+
+    struct StuckHandler {
+        id: String,
+        counts: StartCounts,
+        hold: Duration,
+    }
+
+    impl Actor for StuckHandler {
+        fn started(&mut self, ctx: &Context<Self>) {
+            let mut map = self.counts.lock().unwrap_or_else(|p| p.into_inner());
+            *map.entry(self.id.clone()).or_insert(0) += 1;
+            drop(map);
+            let _ = ctx.send(Block);
+        }
+    }
+
+    impl Handler<Block> for StuckHandler {
+        fn handle(&mut self, _msg: Block, _ctx: &Context<Self>) {
+            thread::sleep(self.hold);
+        }
+    }
+
     fn worker(
         id: &str,
         counts: StartCounts,
@@ -412,6 +690,18 @@ mod threads {
             counts: counts.clone(),
             panic_at: panic_at.clone(),
         }
+    }
+
+    struct Idler;
+    impl Actor for Idler {}
+
+    #[test]
+    fn worker_child_spec_defaults_to_otp_shutdown_timeout() {
+        let spec = ChildSpec::worker("w", || Idler, RestartType::Permanent);
+        assert_eq!(
+            spec.shutdown,
+            ShutdownType::Timeout(Duration::from_secs(5))
+        );
     }
 
     #[test]
@@ -584,5 +874,126 @@ mod threads {
 
         sup.child_handle().stop();
         sup.join();
+    }
+
+    #[test]
+    fn shutdown_timeout_escalates_stuck_handler_to_kill() {
+        let actor = StuckHandler {
+            id: "stuck".into(),
+            counts: Arc::new(Mutex::new(HashMap::new())),
+            hold: Duration::from_secs(5),
+        }
+        .start();
+        let handle = actor.child_handle();
+
+        thread::sleep(Duration::from_millis(20));
+        let reason = shutdown_child_blocking(
+            &handle,
+            ShutdownType::Timeout(Duration::from_millis(50)),
+        );
+        assert_eq!(reason, ExitReason::Kill);
+    }
+
+    #[test]
+    fn supervisor_shutdown_escalates_stuck_child_to_kill() {
+        let counts: StartCounts = Arc::new(Mutex::new(HashMap::new()));
+
+        let sup = Supervisor::builder()
+            .child(
+                ChildSpec::worker(
+                    "stuck",
+                    {
+                        let counts = counts.clone();
+                        move || StuckHandler {
+                            id: "stuck".into(),
+                            counts: counts.clone(),
+                            hold: Duration::from_millis(150),
+                        }
+                    },
+                    RestartType::Permanent,
+                )
+                .with_shutdown(ShutdownType::Timeout(Duration::from_millis(50))),
+            )
+            .start();
+
+        thread::sleep(Duration::from_millis(20));
+        sup.child_handle().stop();
+        sup.join();
+    }
+
+    #[test]
+    fn one_for_all_batch_terminate_escalates_stuck_child() {
+        let counts: StartCounts = Arc::new(Mutex::new(HashMap::new()));
+
+        let sup = Supervisor::builder()
+            .strategy(SupervisorStrategy::OneForAll)
+            .intensity(RestartIntensity {
+                max_restarts: 5,
+                within: Duration::from_secs(10),
+            })
+            .child(
+                ChildSpec::worker(
+                    "fast",
+                    worker("fast", counts.clone(), vec![0]),
+                    RestartType::Permanent,
+                )
+                .with_shutdown(ShutdownType::BrutalKill),
+            )
+            .child(
+                ChildSpec::worker(
+                    "stuck",
+                    {
+                        let counts = counts.clone();
+                        move || StuckHandler {
+                            id: "stuck".into(),
+                            counts: counts.clone(),
+                            hold: Duration::from_millis(150),
+                        }
+                    },
+                    RestartType::Permanent,
+                )
+                .with_shutdown(ShutdownType::Timeout(Duration::from_millis(50))),
+            )
+            .start();
+
+        assert!(
+            wait_until_all(&counts, &["fast", "stuck"], 2, Duration::from_secs(2)),
+            "fast={}, stuck={}",
+            get_count(&counts, "fast"),
+            get_count(&counts, "stuck"),
+        );
+
+        sup.child_handle().stop();
+        sup.join();
+    }
+
+    #[test]
+    fn shutdown_timeout_allows_fast_child_to_shutdown_gracefully() {
+        let stopped_ran = Arc::new(AtomicBool::new(false));
+
+        let sup = Supervisor::builder()
+            .child(
+                ChildSpec::worker(
+                    "fast",
+                    {
+                        let stopped_ran = stopped_ran.clone();
+                        move || SlowStopper {
+                            id: "fast".into(),
+                            counts: Arc::new(Mutex::new(HashMap::new())),
+                            stopped_ran: stopped_ran.clone(),
+                            delay: Duration::from_millis(10),
+                        }
+                    },
+                    RestartType::Permanent,
+                )
+                .with_shutdown(ShutdownType::Timeout(Duration::from_secs(1))),
+            )
+            .start();
+
+        thread::sleep(Duration::from_millis(50));
+        sup.child_handle().stop();
+        sup.join();
+
+        assert!(stopped_ran.load(Ordering::SeqCst));
     }
 }
