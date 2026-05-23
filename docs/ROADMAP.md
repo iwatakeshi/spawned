@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after merging PRs #166 (links), #168 (threads shutdown perf), and #162 (this doc).
+**Last updated:** after child specs, Supervisor actor, and `supervised_workers` example.
 
 For API details, see the [API Guide](API-GUIDE.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -24,7 +24,7 @@ Solved the two critical API issues ([#144](https://github.com/lambdaclass/spawne
 
 ## Phase 3: Supervision Trees — in progress
 
-Target: **v1.0.0**. Building blocks are largely in place; supervisor actor and restart policies remain.
+Target: **v1.0.0**. Core supervision is shipped; dynamic supervisors and actor-level tests for OneForAll/RestForOne remain.
 
 ### 3a. Exit Reasons — ✅ [PR #163](https://github.com/lambdaclass/spawned/pull/163)
 
@@ -52,12 +52,22 @@ Closes [#131](https://github.com/lambdaclass/spawned/issues/131) (monitor half w
 - Transitive propagation through non-trapping middle actors
 - `ExitReason::Kill` is untrappable
 
-### 3e. Child Specs and Supervisor — next
+### 3e. Child Specs and Supervisor — ✅
 
-- **Child specs** ([#132](https://github.com/lambdaclass/spawned/issues/132)) — restart type, shutdown type
-- **Supervisor actor** ([#133](https://github.com/lambdaclass/spawned/issues/133)) — OneForOne, OneForAll, RestForOne
-- **Meltdown protection** — restart intensity limits
-- **Dynamic supervisor** ([#134](https://github.com/lambdaclass/spawned/issues/134)) — stretch goal
+Closes [#132](https://github.com/lambdaclass/spawned/issues/132) and [#133](https://github.com/lambdaclass/spawned/issues/133) (MVP).
+
+- **Child specs** — `RestartType`, `ShutdownType`, `ChildType`, `RestartIntensity`, `should_restart()`
+- **Supervisor actor** — `Supervisor::builder()` with `ChildSpec::worker()` / `ChildSpec::supervisor()`
+- **Restart strategies** — `OneForOne`, `OneForAll`, `RestForOne` (shared `SupervisorLogic`)
+- **Meltdown protection** — restart intensity window (`max_restarts` within `Duration`)
+- **`ChildHandle::shutdown()` / `kill()`** — produce `ExitReason::Shutdown` / `Kill`
+- **Example** — [`supervised_workers`](../examples/supervised_workers)
+
+**Still open within 3e:**
+
+- **Dynamic supervisor** ([#134](https://github.com/lambdaclass/spawned/issues/134)) — add/remove children at runtime
+- **`ShutdownType::Timeout`** — escalate to `kill()` after a grace period (currently treated like `Infinity`)
+- **Actor-level integration tests** for OneForAll and RestForOne (logic is unit-tested)
 
 ### Other Phase 3 work
 
@@ -65,8 +75,8 @@ Closes [#131](https://github.com/lambdaclass/spawned/issues/131) (monitor half w
 
 ## Phase 4: Documentation & Polish — ongoing
 
-- API Guide, migration guide, 15 examples
-- Supervision guide (blocked on 3e)
+- API Guide, migration guide, 16 examples
+- Supervision guide (partial — see API Guide Child Specs / Supervisor sections)
 - Doc tests in crate READMEs ([#137](https://github.com/lambdaclass/spawned/issues/137))
 
 ## Future Considerations (post-v1.0)
@@ -86,9 +96,10 @@ Closes [#131](https://github.com/lambdaclass/spawned/issues/131) (monitor half w
 
 | Feature | Status |
 |---------|--------|
-| Supervisor actor + child specs | ❌ Not started |
-| Restart strategies | ❌ Not started |
-| Meltdown protection | ❌ Not started |
+| Supervisor actor + child specs | ✅ Shipped |
+| Restart strategies (OneForOne/All/RestForOne) | ✅ Shipped |
+| Meltdown protection | ✅ Shipped |
+| Dynamic supervisor | ❌ Not started ([#134](https://github.com/lambdaclass/spawned/issues/134)) |
 | Process groups | ❌ Not started |
 | Distributed actors | ❌ Not started |
 

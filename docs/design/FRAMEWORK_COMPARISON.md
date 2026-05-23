@@ -14,7 +14,7 @@ Sources: issue #124, PRs #114, #146.
 |---------|---------|-------|--------|
 | **Handler\<M\> pattern** | v0.5 | Yes | Yes (enum-based) |
 | **Type erasure (Recipient)** | v0.5 | Yes | No (single msg type per actor) |
-| **Supervision** | Planned | Yes | **Best** (Erlang-style) |
+| **Supervision** | Yes (OneForOne/All/RestForOne) | Yes | **Best** (Erlang-style) |
 | **Distributed actors** | Future | No | `ractor_cluster` |
 | **Dual execution modes** | **Unique** | No | No |
 | **Native OS threads** | **Unique** | No | No |
@@ -23,21 +23,21 @@ Sources: issue #124, PRs #114, #146.
 | **Timers** | Built-in | Yes | `time` module |
 | **Named registry** | v0.5 | Yes | Erlang-style |
 | **Process groups (pg)** | Not yet | No | Erlang-style |
-| **Links/Monitors** | Planned | No | Yes |
+| **Links/Monitors** | Yes | No | Yes |
 | **RPC** | Not yet | No | Built-in |
 | **Multiple runtimes** | Tokio + none | Actix only | Tokio + async-std |
 | **Pure Rust (no unsafe)** | Yes | Some unsafe | Yes |
 
 ### Supervision Comparison
 
-| Aspect | Spawned (Planned) | Actix | Ractor |
-|--------|-------------------|-------|--------|
-| OneForOne | Planned | Yes | Yes |
-| OneForAll | Planned | Yes | Yes |
-| RestForOne | Planned | No | Yes |
-| Meltdown protection | Planned | No | Yes |
-| Supervision trees | Planned | Limited | **Full Erlang-style** |
-| Dynamic supervisors | Planned | No | Yes |
+| Aspect | Spawned | Actix | Ractor |
+|--------|---------|-------|--------|
+| OneForOne | Yes | Yes | Yes |
+| OneForAll | Yes | Yes | Yes |
+| RestForOne | Yes | No | Yes |
+| Meltdown protection | Yes | No | Yes |
+| Supervision trees | Yes (static) | Limited | **Full Erlang-style** |
+| Dynamic supervisors | Planned ([#134](https://github.com/lambdaclass/spawned/issues/134)) | No | Yes |
 
 ### Erlang Alignment
 
@@ -45,7 +45,7 @@ Sources: issue #124, PRs #114, #146.
 |---------|---------|-------|--------|
 | **gen_server model** | Strong | Diverged | **Strongest** |
 | **call/cast naming** | `request`/`send` | `send`/`do_send` | `call`/`cast` |
-| **Supervision trees** | Planned | Limited | Full OTP-style |
+| **Supervision trees** | Yes (static) | Limited | Full OTP-style |
 | **Process registry** | v0.5 | Yes | Erlang-style |
 | **Process groups (pg)** | No | No | Yes |
 | **EPMD-style clustering** | Future | No | `ractor_cluster` |
@@ -235,15 +235,17 @@ The reference model for actor frameworks.
 | `#[protocol]` + `#[actor]` macros | Original design | Done |
 | Named registry | Erlang, Ractor | Done |
 | Dual execution modes | Original design | Done |
+| Links & monitors | Erlang | Done |
+| Supervision trees (static) | Erlang, Ractor | Done |
+| Meltdown protection | Bastion, Ractor | Done |
 
 ### What's Planned
 
 | Feature | Source | Priority |
 |---------|--------|----------|
-| Supervision trees | Erlang, Ractor, Bastion | High (required for 1.0) |
-| Meltdown protection / backoff | Bastion, Ractor | High |
+| Dynamic supervisors ([#134](https://github.com/lambdaclass/spawned/issues/134)) | Erlang, Ractor | High |
+| `ShutdownType::Timeout` escalation | Erlang | Medium |
 | Buffer strategies | core.async | Medium |
-| Links & monitors | Erlang | Medium |
 | Level-triggered cancellation | Trio | Medium |
 
 ### What's Deferred

@@ -88,7 +88,8 @@ For a complete API reference covering all features (timers, type erasure, regist
 - **Type-erased protocol refs** — `XRef` types let actors communicate through protocol interfaces without knowing concrete types
 - **Actor registry** — global name-based registry for discovering actors at runtime
 - **Death observation** — monitors (`Down`) and bidirectional links (`Exit` + `trap_exit`)
-- **Lifecycle handles** — `ChildHandle` and `ExitReason` for supervision scaffolding
+- **Supervision** — `ChildSpec`, `Supervisor`, restart strategies, and meltdown protection
+- **Lifecycle handles** — `ChildHandle`, `ExitReason`, `shutdown()` / `kill()`
 - **Timers** — `send_after` and `send_interval` for delayed and periodic messages
 - **Signal handling** — `send_message_on` to deliver messages on cancellation token signals
 - **Backend selection** — async runtime, blocking thread pool, or dedicated OS thread (tasks mode)
@@ -119,6 +120,7 @@ The return type on each protocol method determines the message kind:
 | [`ping_pong_threads`](examples/ping_pong_threads) | threads | Producer/consumer — thread-based |
 | [`service_discovery`](examples/service_discovery) | tasks | Registry — register and discover actors by name |
 | [`exit_reason`](examples/exit_reason) | tasks | Exit reasons, ChildHandle, monitors, and links |
+| [`supervised_workers`](examples/supervised_workers) | tasks | ChildSpec, Supervisor, OneForOne restart |
 | [`signal_test`](examples/signal_test) | tasks | Timers — `send_interval` and `send_message_on` for cancellation |
 | [`signal_test_threads`](examples/signal_test_threads) | threads | Timers — thread-based |
 | [`updater`](examples/updater) | tasks | Periodic HTTP — recurrent timer-driven requests |
@@ -141,7 +143,9 @@ For developers familiar with Erlang/OTP:
 | `gen_server:call/2` | `ns.find(...)` | Direct method call on ActorRef |
 | `gen_server:cast/2` | `ns.notify(...)` | Direct method call (send variant) |
 | `Pid` | `ActorRef<T>` | Handle to a running actor |
-| `start_link/0` | `actor.start()` | Start the actor |
+| `start_link/0` | `actor.start()` or `start_linked(&parent_ctx)` | Start the actor (optionally linked to parent) |
+| `supervisor:start_link/2` | `Supervisor::builder().child(...).start()` | Supervised child tree |
+| `supervisor:child_spec/4` | `ChildSpec::worker(...)` | Child restart/shutdown policy |
 | `register/2` | `registry::register(name, ref)` | Register an actor by name |
 | `whereis/1` | `registry::whereis(name)` | Look up an actor by name |
 
@@ -183,7 +187,7 @@ spawned/
 │       └── threads/   # Sync implementation (OS threads)
 ├── macros/        # Proc macros (#[protocol], #[actor]) — re-exported by concurrency
 ├── rt/            # Runtime abstraction (wraps tokio, provides CancellationToken)
-└── examples/      # 14 usage examples
+└── examples/      # 16 usage examples
 ```
 
 Users depend only on `spawned-concurrency` (which re-exports the macros) and `spawned-rt`.
@@ -198,7 +202,7 @@ Protocols make this separation explicit: the trait defines *what* an actor does,
 
 ## Roadmap
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the full roadmap. Next milestone: **supervision trees** for v1.0.0.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the full roadmap. Phase 3 supervision (child specs, supervisor actor, restart strategies) is shipped; v1.0.0 targets dynamic supervisors and remaining OTP parity.
 
 ## Inspiration
 

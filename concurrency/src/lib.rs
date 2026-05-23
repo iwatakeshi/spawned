@@ -58,6 +58,8 @@
 //! - [`error`] — `ActorError` and `ExitReason` types
 //! - [`message`] — `Message` trait for defining message types
 //! - [`child_handle`] — `ChildHandle` and `ActorId` for type-erased actor management
+//! - [`child_spec`] — restart/shutdown policy types for supervision
+//! - [`supervisor`] — shared `SupervisorLogic` and `SupervisorStrategy`
 //! - [`monitor`] — `MonitorRef` and `Down` for unidirectional death observation
 //! - [`link`] — `Exit` and bidirectional links with `trap_exit` semantics
 //!

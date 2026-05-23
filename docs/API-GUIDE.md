@@ -16,6 +16,7 @@ Complete reference for the spawned actor framework. For a quick introduction, se
 - [ChildHandle and ActorId](#childhandle-and-actorid)
 - [Monitors](#monitors)
 - [Links and trap\_exit](#links-and-trap_exit)
+- [Child Specs and Supervisor](#child-specs-and-supervisor)
 - [Response\<T\>](#responset)
 - [Message Trait](#message-trait)
 - [Error Handling](#error-handling)
@@ -337,7 +338,17 @@ handle.stop();
 let reason = handle.wait_exit_async().await;  // tasks mode
 ```
 
-Use `Vec<ChildHandle>` to manage heterogeneous actors. See the [`exit_reason`](../examples/exit_reason) example.
+| Method | Description |
+|--------|-------------|
+| `handle.stop()` | Graceful stop; actor exits with `ExitReason::Normal` after `stopped()` |
+| `handle.shutdown()` | Supervisor-ordered shutdown; exits with `ExitReason::Shutdown` |
+| `handle.kill()` | Brutal stop; skips `stopped()`, exits with `ExitReason::Kill` |
+| `handle.is_alive()` | Returns `true` while the actor is running |
+| `handle.exit_reason()` | Poll exit reason; `None` if still running |
+| `handle.wait_exit_async()` | Async wait (both modes; threads mode uses `spawn_blocking`) |
+| `handle.wait_exit_blocking()` | Block until exit (see docs for tokio runtime constraints) |
+
+Use `Vec<ChildHandle>` to manage heterogeneous actors. See the [`exit_reason`](../examples/exit_reason) example for monitors and manual linking.
 
 ---
 
@@ -362,15 +373,16 @@ ctx.demonitor(monitor_ref);  // cancel before target dies
 
 Bidirectional fate-sharing. When a linked actor dies abnormally, the peer receives an exit signal — either cancelling it or delivering an `Exit` message if trapping.
 
+Supervisors use links (not monitors) and trap exits so child deaths arrive as messages instead of killing the supervisor. See [Child Specs and Supervisor](#child-specs-and-supervisor) for the built-in supervisor.
+
 ```rust
-impl Actor for Supervisor {
+impl Actor for MySupervisor {
     async fn exit_received(&mut self, exit: Exit, ctx: &Context<Self>) {
         tracing::info!("child {} died: {}", exit.from, exit.reason);
-        // restart logic goes here (not yet built into the framework)
+        // manual restart logic — or use Supervisor::builder() instead
     }
 }
 
-// Supervisor pattern:
 ctx.trap_exit(true);
 let child = Worker::new().start_linked(&ctx);
 ```
@@ -385,6 +397,73 @@ let child = Worker::new().start_linked(&ctx);
 `ExitReason::Kill` is untrappable. Normal exits are not propagated to non-trapping peers.
 
 ---
+
+## Child Specs and Supervisor
+
+Built-in Erlang-style supervision. Shared policy types live in the crate root; `ChildSpec` and `Supervisor` are mode-specific (`tasks::` or `threads::`).
+
+### Shared types
+
+```rust
+use spawned_concurrency::{
+    RestartType, ShutdownType, ChildType, RestartIntensity, SupervisorStrategy,
+    should_restart,
+};
+```
+
+| Type | Description |
+|------|-------------|
+| `RestartType::Permanent` | Restart on any exit except `ExitReason::Shutdown` |
+| `RestartType::Transient` | Restart only on abnormal exit (`is_abnormal()`) |
+| `RestartType::Temporary` | Never restart |
+| `ShutdownType::Infinity` | Wait for `stopped()` during supervisor shutdown |
+| `ShutdownType::Timeout(d)` | Grace period (escalation to kill planned) |
+| `ShutdownType::BrutalKill` | Immediate `kill()` on shutdown |
+| `RestartIntensity` | `{ max_restarts, within }` — meltdown if exceeded |
+| `SupervisorStrategy` | `OneForOne`, `OneForAll`, `RestForOne` |
+
+### ChildSpec
+
+Describes how to start and supervise one child. The start closure receives the supervisor's `Context` and must call `start_linked`:
+
+```rust
+use spawned_concurrency::tasks::{ChildSpec, Supervisor, ActorStart as _};
+use spawned_concurrency::{
+    RestartType, RestartIntensity, ShutdownType, SupervisorStrategy,
+};
+use std::time::Duration;
+
+let spec = ChildSpec::worker("worker1", || Worker::new(), RestartType::Permanent)
+    .with_shutdown(ShutdownType::Infinity);
+
+// Nested supervisor:
+let nested = ChildSpec::supervisor("sup", || inner_supervisor(), RestartType::Permanent);
+```
+
+### Supervisor builder
+
+```rust
+let sup = Supervisor::builder()
+    .strategy(SupervisorStrategy::OneForOne)
+    .intensity(RestartIntensity {
+        max_restarts: 3,
+        within: Duration::from_secs(5),
+    })
+    .child(ChildSpec::worker("alpha", || Worker::new("alpha"), RestartType::Permanent))
+    .child(ChildSpec::worker("beta", || Worker::new("beta"), RestartType::Transient))
+    .start();  // returns ActorRef<Supervisor>
+```
+
+The supervisor enables `trap_exit(true)` in `started()`, links each child via `start_linked`, and handles `exit_received` internally:
+
+- **OneForOne** — restart only the dead child (if policy and intensity allow)
+- **OneForAll** — shut down all children, then restart all
+- **RestForOne** — shut down the dead child and all children started after it, then restart those
+- **Meltdown** — supervisor stops abnormally when restart intensity is exceeded
+
+On supervisor shutdown, children are stopped in reverse start order using each spec's `ShutdownType` (`shutdown()` or `kill()`).
+
+See the [`supervised_workers`](../examples/supervised_workers) example and the manual supervisor pattern in [`exit_reason`](../examples/exit_reason) Scenario 9.
 
 ## Response\<T\>
 
@@ -462,14 +541,16 @@ pub enum ActorError {
 
 ```rust
 pub enum ExitReason {
-    Normal,
-    Shutdown,         // reserved for supervisor-ordered shutdown
-    Panic(String),
-    Kill,
+    Normal,           // ctx.stop() or clean channel closure
+    Shutdown,         // ChildHandle::shutdown() or supervisor-ordered stop
+    Panic(String),    // panic in started(), handler, or stopped()
+    Kill,             // ChildHandle::kill() or external abort
 }
 ```
 
-Use `reason.is_abnormal()` for restart policy decisions. Supervisors are not yet implemented — `ExitReason` and links/monitors are scaffolding.
+Use `reason.is_abnormal()` for restart policy decisions. `should_restart(restart_type, &reason)` encodes Erlang-style permanent/transient/temporary rules.
+
+Supervisors are built in — see [Child Specs and Supervisor](#child-specs-and-supervisor).
 
 - `send()` / `request()` return `Err(ActorStopped)` when the actor has stopped
 - All lifecycle phases are wrapped in `catch_unwind`
