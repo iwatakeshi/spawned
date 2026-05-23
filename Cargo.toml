@@ -20,6 +20,7 @@ members = [
     "examples/chat_room_threads",
     "examples/service_discovery",
     "examples/exit_reason",
+    "examples/supervised_workers",
 ]
 
 [workspace.dependencies]
