@@ -3,7 +3,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::child_handle::ChildHandle;
-use crate::child_spec::{ChildType, RestartIntensity, RestartType, ShutdownType};
+use crate::child_spec::{
+    shutdown_child_async, ChildType, DEFAULT_WORKER_SHUTDOWN, RestartIntensity, RestartType,
+    ShutdownType, warn_supervisor_timeout,
+};
 use crate::link::Exit;
 use crate::supervisor::{
     ChildHandleSlot, ChildPolicy, SupervisorAction, SupervisorLogic, SupervisorStrategy,
@@ -43,7 +46,7 @@ impl ChildSpec {
             id: id.into(),
             start: Arc::new(move |ctx| start().start_linked(ctx).child_handle()),
             restart,
-            shutdown: ShutdownType::Infinity,
+            shutdown: DEFAULT_WORKER_SHUTDOWN,
             child_type: ChildType::Worker,
         }
     }
@@ -64,6 +67,7 @@ impl ChildSpec {
     }
 
     pub fn with_shutdown(mut self, shutdown: ShutdownType) -> Self {
+        warn_supervisor_timeout(self.child_type, shutdown);
         self.shutdown = shutdown;
         self
     }
@@ -159,12 +163,17 @@ impl Supervisor {
         self.handles.insert(child_id.to_string(), handle);
     }
 
-    fn terminate_children(&mut self, ids: &[String]) {
+    async fn terminate_children(&mut self, ids: &[String]) {
         for id in ids {
-            if let Some(spec) = self.specs.iter().find(|spec| spec.id == *id) {
-                if let Some(handle) = self.handles.get(id) {
-                    stop_child(handle, spec.shutdown);
-                }
+            let shutdown = self
+                .specs
+                .iter()
+                .find(|spec| spec.id == *id)
+                .map(|spec| spec.shutdown)
+                .unwrap_or(ShutdownType::Infinity);
+            if let Some(handle) = self.handles.get(id) {
+                shutdown_child_async(handle, shutdown).await;
+                self.logic.mark_child_dead(handle.id());
             }
         }
     }
@@ -180,7 +189,7 @@ impl Supervisor {
         }
     }
 
-    fn handle_exit(&mut self, exit: Exit, ctx: &Context<Self>) {
+    async fn handle_exit(&mut self, exit: Exit, ctx: &Context<Self>) {
         if self.logic.suppress_restarts() {
             self.logic.note_exit_during_batch(exit.from);
             self.maybe_complete_batch_restart(ctx);
@@ -194,7 +203,7 @@ impl Supervisor {
             SupervisorAction::Ignore => {}
             SupervisorAction::RestartOne(id) => self.restart_child(ctx, &id),
             SupervisorAction::TerminateBatch(ids) => {
-                self.terminate_children(&ids);
+                self.terminate_children(&ids).await;
                 self.maybe_complete_batch_restart(ctx);
             }
             SupervisorAction::Meltdown => {
@@ -218,7 +227,7 @@ impl Actor for Supervisor {
     }
 
     async fn exit_received(&mut self, exit: Exit, ctx: &Context<Self>) {
-        self.handle_exit(exit, ctx);
+        self.handle_exit(exit, ctx).await;
     }
 
     async fn stopped(&mut self, _ctx: &Context<Self>) {
@@ -232,17 +241,9 @@ impl Actor for Supervisor {
                 .map(|spec| spec.shutdown)
                 .unwrap_or(ShutdownType::Infinity);
             if let Some(handle) = self.handles.get(&id) {
-                stop_child(handle, shutdown);
-                let _ = handle.wait_exit_async().await;
+                shutdown_child_async(handle, shutdown).await;
             }
         }
-    }
-}
-
-fn stop_child(handle: &ChildHandle, shutdown: ShutdownType) {
-    match shutdown {
-        ShutdownType::Infinity | ShutdownType::Timeout(_) => handle.shutdown(),
-        ShutdownType::BrutalKill => handle.kill(),
     }
 }
 

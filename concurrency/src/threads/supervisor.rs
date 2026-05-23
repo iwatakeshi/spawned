@@ -3,7 +3,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::child_handle::ChildHandle;
-use crate::child_spec::{ChildType, RestartIntensity, RestartType, ShutdownType};
+use crate::child_spec::{
+    shutdown_child_blocking, ChildType, DEFAULT_WORKER_SHUTDOWN, RestartIntensity, RestartType,
+    ShutdownType, warn_supervisor_timeout,
+};
 use crate::link::Exit;
 use crate::supervisor::{
     ChildHandleSlot, ChildPolicy, SupervisorAction, SupervisorLogic, SupervisorStrategy,
@@ -42,7 +45,7 @@ impl ChildSpec {
             id: id.into(),
             start: Arc::new(move |ctx| start().start_linked(ctx).child_handle()),
             restart,
-            shutdown: ShutdownType::Infinity,
+            shutdown: DEFAULT_WORKER_SHUTDOWN,
             child_type: ChildType::Worker,
         }
     }
@@ -62,6 +65,7 @@ impl ChildSpec {
     }
 
     pub fn with_shutdown(mut self, shutdown: ShutdownType) -> Self {
+        warn_supervisor_timeout(self.child_type, shutdown);
         self.shutdown = shutdown;
         self
     }
@@ -157,10 +161,15 @@ impl Supervisor {
 
     fn terminate_children(&mut self, ids: &[String]) {
         for id in ids {
-            if let Some(spec) = self.specs.iter().find(|spec| spec.id == *id) {
-                if let Some(handle) = self.handles.get(id) {
-                    stop_child(handle, spec.shutdown);
-                }
+            let shutdown = self
+                .specs
+                .iter()
+                .find(|spec| spec.id == *id)
+                .map(|spec| spec.shutdown)
+                .unwrap_or(ShutdownType::Infinity);
+            if let Some(handle) = self.handles.get(id) {
+                shutdown_child_blocking(handle, shutdown);
+                self.logic.mark_child_dead(handle.id());
             }
         }
     }
@@ -228,17 +237,9 @@ impl Actor for Supervisor {
                 .map(|spec| spec.shutdown)
                 .unwrap_or(ShutdownType::Infinity);
             if let Some(handle) = self.handles.get(&id) {
-                stop_child(handle, shutdown);
-                let _ = handle.wait_exit_blocking();
+                shutdown_child_blocking(handle, shutdown);
             }
         }
-    }
-}
-
-fn stop_child(handle: &ChildHandle, shutdown: ShutdownType) {
-    match shutdown {
-        ShutdownType::Infinity | ShutdownType::Timeout(_) => handle.shutdown(),
-        ShutdownType::BrutalKill => handle.kill(),
     }
 }
 
