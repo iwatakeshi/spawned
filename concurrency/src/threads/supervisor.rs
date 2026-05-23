@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use crate::child_handle::ChildHandle;
 use crate::child_spec::{
-    shutdown_child_blocking, ChildType, DEFAULT_WORKER_SHUTDOWN, RestartIntensity, RestartType,
-    ShutdownType, warn_supervisor_timeout,
+    shutdown_child_blocking, warn_supervisor_timeout, ChildType, RestartIntensity, RestartType,
+    ShutdownType, DEFAULT_WORKER_SHUTDOWN,
 };
 use crate::link::Exit;
 use crate::supervisor::{
@@ -14,10 +14,12 @@ use crate::supervisor::{
 
 use super::actor::{Actor, ActorRef, ActorStart, Context};
 
+type ChildStartFn = Arc<dyn Fn(&Context<Supervisor>) -> ChildHandle + Send + Sync>;
+
 /// Specification for a supervised child in threads mode.
 pub struct ChildSpec {
     pub id: String,
-    start: Arc<dyn Fn(&Context<Supervisor>) -> ChildHandle + Send + Sync>,
+    start: ChildStartFn,
     pub restart: RestartType,
     pub shutdown: ShutdownType,
     pub child_type: ChildType,
@@ -216,7 +218,7 @@ impl Supervisor {
 impl Actor for Supervisor {
     fn started(&mut self, ctx: &Context<Self>) {
         ctx.trap_exit(true);
-        let specs: Vec<_> = self.specs.iter().cloned().collect();
+        let specs = self.specs.clone();
         for (index, spec) in specs.iter().enumerate() {
             self.start_child(ctx, spec, index);
         }
@@ -267,9 +269,6 @@ mod tests {
             }
         }
     }
-
-    struct Idler;
-    impl Actor for Idler {}
 
     struct CountingIdler {
         starts: Arc<AtomicUsize>,

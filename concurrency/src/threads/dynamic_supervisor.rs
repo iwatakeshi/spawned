@@ -4,12 +4,10 @@ use std::time::Instant;
 
 use crate::child_handle::{ActorId, ChildHandle};
 use crate::child_spec::{
-    shutdown_child_blocking, ChildType, DEFAULT_WORKER_SHUTDOWN, RestartIntensity, RestartType,
-    ShutdownType, warn_supervisor_timeout,
+    shutdown_child_blocking, warn_supervisor_timeout, ChildType, RestartIntensity, RestartType,
+    ShutdownType, DEFAULT_WORKER_SHUTDOWN,
 };
-use crate::dynamic_supervisor::{
-    instance_id, DynamicChildInfo, DynamicSupervisorError,
-};
+use crate::dynamic_supervisor::{instance_id, DynamicChildInfo, DynamicSupervisorError};
 use crate::link::Exit;
 use crate::registry;
 use crate::response::Response;
@@ -19,10 +17,12 @@ use crate::supervisor::{
 
 use super::actor::{Actor, ActorRef, ActorStart, Context, Handler};
 
+type ChildStartFn = Arc<dyn Fn(&Context<DynamicSupervisor>) -> ChildHandle + Send + Sync>;
+
 /// Specification for a dynamically started child in threads mode.
 pub struct ChildSpec {
     pub id: String,
-    start: Arc<dyn Fn(&Context<DynamicSupervisor>) -> ChildHandle + Send + Sync>,
+    start: ChildStartFn,
     pub restart: RestartType,
     pub shutdown: ShutdownType,
     pub child_type: ChildType,
@@ -167,10 +167,7 @@ pub trait DynamicSupervisorApi {
         reg_name: Option<String>,
     ) -> Response<Result<ChildHandle, DynamicSupervisorError>>;
 
-    fn terminate_child(
-        &self,
-        actor_id: ActorId,
-    ) -> Response<Result<(), DynamicSupervisorError>>;
+    fn terminate_child(&self, actor_id: ActorId) -> Response<Result<(), DynamicSupervisorError>>;
 
     fn count_children(&self) -> Response<usize>;
 
@@ -186,10 +183,7 @@ impl DynamicSupervisorApi for ActorRef<DynamicSupervisor> {
         Response::ready(self.request(StartChild { spec, reg_name }))
     }
 
-    fn terminate_child(
-        &self,
-        actor_id: ActorId,
-    ) -> Response<Result<(), DynamicSupervisorError>> {
+    fn terminate_child(&self, actor_id: ActorId) -> Response<Result<(), DynamicSupervisorError>> {
         Response::ready(self.request(TerminateChild { actor_id }))
     }
 
@@ -461,7 +455,10 @@ mod tests {
         let sup = DynamicSupervisor::builder().start();
 
         let handle = sup
-            .start_child(ChildSpec::worker("w", || Idler, RestartType::Permanent), None)
+            .start_child(
+                ChildSpec::worker("w", || Idler, RestartType::Permanent),
+                None,
+            )
             .unwrap()
             .unwrap();
 
@@ -520,11 +517,17 @@ mod tests {
     fn max_children_is_enforced() {
         let sup = DynamicSupervisor::builder().max_children(1).start();
 
-        sup.start_child(ChildSpec::worker("w", || Idler, RestartType::Permanent), None)
-            .unwrap()
-            .unwrap();
+        sup.start_child(
+            ChildSpec::worker("w", || Idler, RestartType::Permanent),
+            None,
+        )
+        .unwrap()
+        .unwrap();
         let err = sup
-            .start_child(ChildSpec::worker("w", || Idler, RestartType::Permanent), None)
+            .start_child(
+                ChildSpec::worker("w", || Idler, RestartType::Permanent),
+                None,
+            )
             .unwrap()
             .unwrap_err();
         assert_eq!(err, DynamicSupervisorError::MaxChildrenExceeded);

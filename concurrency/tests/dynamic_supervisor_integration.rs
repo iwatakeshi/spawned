@@ -4,15 +4,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use spawned_concurrency::{
-    registry, DynamicSupervisorError, RestartIntensity, RestartType,
-};
+use spawned_concurrency::{registry, DynamicSupervisorError, RestartIntensity, RestartType};
 
 mod tasks {
     use super::*;
     use spawned_concurrency::tasks::{
-        dynamic_supervisor::ChildSpec, Actor, Context, DynamicSupervisor,
-        DynamicSupervisorApi,
+        dynamic_supervisor::ChildSpec, Actor, Context, DynamicSupervisor, DynamicSupervisorApi,
     };
     use spawned_rt::tasks as rt;
 
@@ -124,14 +121,26 @@ mod tasks {
             let sup = DynamicSupervisor::builder().max_children(2).start();
 
             sup.start_child(
-                ChildSpec::worker("w", || CountingWorker { starts: Arc::new(AtomicUsize::new(0)) }, RestartType::Permanent),
+                ChildSpec::worker(
+                    "w",
+                    || CountingWorker {
+                        starts: Arc::new(AtomicUsize::new(0)),
+                    },
+                    RestartType::Permanent,
+                ),
                 None,
             )
             .await
             .unwrap()
             .unwrap();
             sup.start_child(
-                ChildSpec::worker("w", || CountingWorker { starts: Arc::new(AtomicUsize::new(0)) }, RestartType::Permanent),
+                ChildSpec::worker(
+                    "w",
+                    || CountingWorker {
+                        starts: Arc::new(AtomicUsize::new(0)),
+                    },
+                    RestartType::Permanent,
+                ),
                 None,
             )
             .await
@@ -140,7 +149,13 @@ mod tasks {
 
             let err = sup
                 .start_child(
-                    ChildSpec::worker("w", || CountingWorker { starts: Arc::new(AtomicUsize::new(0)) }, RestartType::Permanent),
+                    ChildSpec::worker(
+                        "w",
+                        || CountingWorker {
+                            starts: Arc::new(AtomicUsize::new(0)),
+                        },
+                        RestartType::Permanent,
+                    ),
                     None,
                 )
                 .await
@@ -159,7 +174,13 @@ mod tasks {
             let sup = DynamicSupervisor::builder().start();
 
             sup.start_child(
-                ChildSpec::worker("w", || CountingWorker { starts: Arc::new(AtomicUsize::new(0)) }, RestartType::Permanent),
+                ChildSpec::worker(
+                    "w",
+                    || CountingWorker {
+                        starts: Arc::new(AtomicUsize::new(0)),
+                    },
+                    RestartType::Permanent,
+                ),
                 Some("pool-worker".into()),
             )
             .await
@@ -183,7 +204,9 @@ mod tasks {
 
 mod threads {
     use super::*;
-    use spawned_concurrency::threads::{Actor, dynamic_supervisor::ChildSpec, Context, DynamicSupervisor, DynamicSupervisorApi};
+    use spawned_concurrency::threads::{
+        dynamic_supervisor::ChildSpec, Actor, Context, DynamicSupervisor, DynamicSupervisorApi,
+    };
     use std::thread;
 
     struct CountingWorker {

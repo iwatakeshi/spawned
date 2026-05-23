@@ -17,7 +17,10 @@ impl Actor for Worker {
         let n = self.starts.fetch_add(1, Ordering::SeqCst);
         tracing::info!("[{}] started (generation {})", self.name, n + 1);
         if n == 0 {
-            tracing::warn!("[{}] crashing once — dynamic supervisor should restart", self.name);
+            tracing::warn!(
+                "[{}] crashing once — dynamic supervisor should restart",
+                self.name
+            );
             panic!("demo crash from {}", self.name);
         }
     }
@@ -77,7 +80,10 @@ fn main() {
             }
             rt::sleep(Duration::from_millis(50)).await;
         }
-        println!("  Total worker starts after crash/restart: {}", starts.load(Ordering::SeqCst));
+        println!(
+            "  Total worker starts after crash/restart: {}",
+            starts.load(Ordering::SeqCst)
+        );
 
         let children = sup.which_children().await.unwrap();
         if let Some(first) = children.first() {
@@ -85,7 +91,10 @@ fn main() {
             sup.terminate_child(first.actor_id).await.unwrap().unwrap();
         }
 
-        println!("  Active children after terminate: {}", sup.count_children().await.unwrap());
+        println!(
+            "  Active children after terminate: {}",
+            sup.count_children().await.unwrap()
+        );
 
         println!("\n--- Shutting down dynamic supervisor ---");
         sup.child_handle().stop();

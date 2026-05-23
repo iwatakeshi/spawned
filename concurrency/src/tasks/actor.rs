@@ -7,9 +7,9 @@ use crate::link::{
     self, new_link_table, new_linked_exit_reason, new_trap_exit_flag, Exit, LinkTable,
     LinkedExitReason, SendExitFn, TrapExitFlag,
 };
-use crate::pg;
 use crate::message::Message;
 use crate::monitor::{Down, MonitorRef};
+use crate::pg;
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
 use spawned_rt::{

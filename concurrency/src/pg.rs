@@ -34,12 +34,7 @@ struct PgStore {
 }
 
 impl PgStore {
-    fn typed_join<T: Clone + Send + Sync + 'static>(
-        &mut self,
-        group: &str,
-        id: ActorId,
-        value: T,
-    ) {
+    fn typed_join<T: Clone + Send + Sync + 'static>(&mut self, group: &str, id: ActorId, value: T) {
         let key = (group.to_string(), TypeId::of::<T>());
         let bucket = self
             .typed
@@ -254,13 +249,6 @@ pub(crate) fn typed_join<T: Clone + Send + Sync + 'static>(
         .write()
         .unwrap_or_else(|p| p.into_inner())
         .typed_join(group.as_ref(), id, value);
-}
-
-pub(crate) fn typed_leave<T: 'static>(
-    group: impl AsRef<str>,
-    id: ActorId,
-) -> Result<(), PgError> {
-    leave(group, id)
 }
 
 pub(crate) fn typed_members<T: Clone + Send + Sync + 'static>(group: impl AsRef<str>) -> Vec<T> {

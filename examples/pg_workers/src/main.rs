@@ -1,8 +1,8 @@
 use spawned_concurrency::message::Message;
-use spawned_concurrency::tasks::{pg, Actor, ActorStart, Context, Handler};
+use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler, pg};
 use spawned_rt::tasks as rt;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const GROUP: &str = "workers";
 
@@ -24,7 +24,7 @@ impl Actor for Worker {
     }
 
     async fn stopped(&mut self, ctx: &Context<Self>) {
-        let _ = pg::leave::<Self>(GROUP, ctx.id());
+        let _ = pg::leave(GROUP, ctx.id());
         tracing::info!("[{}] left group '{}'", self.name, GROUP);
     }
 }
@@ -71,7 +71,10 @@ fn main() {
 
         rt::sleep(std::time::Duration::from_millis(50)).await;
 
-        println!("--- Group members: {} ---", pg::members::<Worker>(GROUP).len());
+        println!(
+            "--- Group members: {} ---",
+            pg::members::<Worker>(GROUP).len()
+        );
         assert_eq!(pg::members::<Worker>(GROUP).len(), 3);
 
         println!("--- Broadcast ping to all workers ---");

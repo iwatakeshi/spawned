@@ -1,6 +1,7 @@
-use crate::child_spec::{should_restart, RestartIntensity, RestartType};
 use crate::child_handle::ActorId;
+use crate::child_spec::{should_restart, RestartIntensity, RestartType};
 use crate::error::ExitReason;
+use std::cmp::Reverse;
 use std::collections::VecDeque;
 use std::time::Instant;
 
@@ -67,6 +68,10 @@ pub struct IntensityTracker {
     restart_timestamps: VecDeque<Instant>,
 }
 
+/// Intensity window exceeded — too many restarts in the configured period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntensityExceeded;
+
 impl IntensityTracker {
     pub fn new(intensity: RestartIntensity) -> Self {
         Self {
@@ -75,8 +80,8 @@ impl IntensityTracker {
         }
     }
 
-    /// Record a restart attempt. Returns `Err(())` when intensity is exceeded.
-    pub fn record_restart(&mut self, now: Instant) -> Result<(), ()> {
+    /// Record a restart attempt. Returns `Err` when intensity is exceeded.
+    pub fn record_restart(&mut self, now: Instant) -> Result<(), IntensityExceeded> {
         while let Some(front) = self.restart_timestamps.front() {
             if now.duration_since(*front) > self.intensity.within {
                 self.restart_timestamps.pop_front();
@@ -85,7 +90,7 @@ impl IntensityTracker {
             }
         }
         if self.restart_timestamps.len() >= self.intensity.max_restarts as usize {
-            return Err(());
+            return Err(IntensityExceeded);
         }
         self.restart_timestamps.push_back(now);
         Ok(())
@@ -190,9 +195,7 @@ impl SupervisorLogic {
     }
 
     pub fn has_child_id(&self, id: &str) -> bool {
-        self.children
-            .iter()
-            .any(|child| child.policy.id == id)
+        self.children.iter().any(|child| child.policy.id == id)
     }
 
     /// Next start index for a dynamically added child.
@@ -218,9 +221,11 @@ impl SupervisorLogic {
     }
 
     pub fn remove_child_by_actor(&mut self, actor_id: ActorId) -> bool {
-        let Some(index) = self.children.iter().position(|child| {
-            child.handle.is_some_and(|slot| slot.id == actor_id)
-        }) else {
+        let Some(index) = self
+            .children
+            .iter()
+            .position(|child| child.handle.is_some_and(|slot| slot.id == actor_id))
+        else {
             return false;
         };
         self.children.remove(index);
@@ -321,14 +326,11 @@ impl SupervisorLogic {
                 .children
                 .iter()
                 .any(|child| child.handle.is_some_and(|slot| slot.alive)),
-            BatchRestart::FromIndex(index) => self
-                .children
-                .get(*index..)
-                .is_some_and(|slice| {
-                    !slice
-                        .iter()
-                        .any(|child| child.handle.is_some_and(|slot| slot.alive))
-                }),
+            BatchRestart::FromIndex(index) => self.children.get(*index..).is_some_and(|slice| {
+                !slice
+                    .iter()
+                    .any(|child| child.handle.is_some_and(|slot| slot.alive))
+            }),
         }
     }
 
@@ -339,7 +341,7 @@ impl SupervisorLogic {
             .iter()
             .map(|child| (child.policy.start_index, child.policy.id.clone()))
             .collect();
-        ids.sort_by(|a, b| b.0.cmp(&a.0));
+        ids.sort_by_key(|b| Reverse(b.0));
         ids.into_iter().map(|(_, id)| id).collect()
     }
 }
@@ -372,7 +374,12 @@ mod tests {
         }
     }
 
-    fn child(id: &str, restart: RestartType, start_index: usize, handle: ChildHandleSlot) -> SupervisedChild {
+    fn child(
+        id: &str,
+        restart: RestartType,
+        start_index: usize,
+        handle: ChildHandleSlot,
+    ) -> SupervisedChild {
         SupervisedChild {
             policy: ChildPolicy {
                 id: id.into(),
@@ -408,10 +415,8 @@ mod tests {
 
     #[test]
     fn one_for_one_ignores_shutdown_exit() {
-        let mut logic = SupervisorLogic::new(
-            SupervisorStrategy::OneForOne,
-            RestartIntensity::default(),
-        );
+        let mut logic =
+            SupervisorLogic::new(SupervisorStrategy::OneForOne, RestartIntensity::default());
         let handle = slot(1);
         logic.register_child(
             ChildPolicy {
@@ -472,10 +477,8 @@ mod tests {
 
     #[test]
     fn one_for_all_terminates_everyone() {
-        let mut logic = SupervisorLogic::new(
-            SupervisorStrategy::OneForAll,
-            RestartIntensity::default(),
-        );
+        let mut logic =
+            SupervisorLogic::new(SupervisorStrategy::OneForAll, RestartIntensity::default());
         let h1 = slot(1);
         let h2 = slot(2);
         logic.children = vec![
@@ -493,10 +496,8 @@ mod tests {
 
     #[test]
     fn rest_for_one_terminates_from_dead_index() {
-        let mut logic = SupervisorLogic::new(
-            SupervisorStrategy::RestForOne,
-            RestartIntensity::default(),
-        );
+        let mut logic =
+            SupervisorLogic::new(SupervisorStrategy::RestForOne, RestartIntensity::default());
         let h0 = slot(0);
         let h1 = slot(1);
         let h2 = slot(2);
@@ -515,10 +516,8 @@ mod tests {
 
     #[test]
     fn pending_batch_restart_ids_after_all_dead() {
-        let mut logic = SupervisorLogic::new(
-            SupervisorStrategy::OneForAll,
-            RestartIntensity::default(),
-        );
+        let mut logic =
+            SupervisorLogic::new(SupervisorStrategy::OneForAll, RestartIntensity::default());
         let h1 = slot(1);
         let h2 = slot(2);
         logic.children = vec![
@@ -536,10 +535,8 @@ mod tests {
 
     #[test]
     fn child_count_list_remove_and_next_start_index() {
-        let mut logic = SupervisorLogic::new(
-            SupervisorStrategy::OneForOne,
-            RestartIntensity::default(),
-        );
+        let mut logic =
+            SupervisorLogic::new(SupervisorStrategy::OneForOne, RestartIntensity::default());
         let h0 = slot(1);
         let h1 = slot(2);
         logic.register_child(

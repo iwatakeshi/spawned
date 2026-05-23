@@ -47,8 +47,8 @@ pub mod threads;
 
 pub use child_handle::{ActorId, ChildHandle};
 pub use child_spec::{
-    should_restart, shutdown_child_async, shutdown_child_blocking, ChildType,
-    DEFAULT_WORKER_SHUTDOWN, RestartIntensity, RestartType, ShutdownType,
+    should_restart, shutdown_child_async, shutdown_child_blocking, ChildType, RestartIntensity,
+    RestartType, ShutdownType, DEFAULT_WORKER_SHUTDOWN,
 };
 pub use dynamic_supervisor::{DynamicChildInfo, DynamicSupervisorError};
 pub use error::{ActorError, ExitReason};
@@ -56,5 +56,5 @@ pub use link::Exit;
 pub use monitor::{Down, MonitorRef};
 pub use pg::PgError;
 pub use response::Response;
-pub use supervisor::SupervisorStrategy;
 pub use spawned_macros::{actor, protocol};
+pub use supervisor::SupervisorStrategy;

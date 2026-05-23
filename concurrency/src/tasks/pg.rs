@@ -11,8 +11,8 @@ pub fn join<A: Actor>(group: impl AsRef<str>, actor: &ActorRef<A>) {
 }
 
 /// Leave a group once (decrement join count).
-pub fn leave<A: Actor>(group: impl AsRef<str>, id: ActorId) -> Result<(), PgError> {
-    pg::typed_leave::<ActorRef<A>>(group, id)
+pub fn leave(group: impl AsRef<str>, id: ActorId) -> Result<(), PgError> {
+    pg::leave(group, id)
 }
 
 /// Returns all live [`ActorRef`] members of a group.

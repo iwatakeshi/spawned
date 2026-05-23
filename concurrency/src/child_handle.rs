@@ -149,12 +149,6 @@ impl ChildHandle {
     pub(crate) fn send_exit_fn(&self) -> &SendExitFn {
         &self.send_exit
     }
-    pub(crate) fn requested_exit_reason(&self) -> &RequestedExitReason {
-        &self.requested_exit
-    }
-    pub(crate) fn skip_stopped_flag(&self) -> &Arc<AtomicBool> {
-        &self.skip_stopped
-    }
 
     /// The actor's unique identity.
     pub fn id(&self) -> ActorId {
@@ -268,11 +262,9 @@ impl ChildHandle {
             return Some(reason);
         }
         match &self.completion {
-            Completion::Tasks(rx) => match spawned_rt::tasks::timeout(timeout, wait_loop(rx.clone())).await
-            {
-                Ok(reason) => Some(reason),
-                Err(_) => None,
-            },
+            Completion::Tasks(rx) => spawned_rt::tasks::timeout(timeout, wait_loop(rx.clone()))
+                .await
+                .ok(),
             Completion::Threads(_) => {
                 let handle = self.clone();
                 match spawned_rt::tasks::timeout(
@@ -382,10 +374,9 @@ fn wait_for_tasks_exit_blocking_with_timeout(
     }
 
     let wait = async {
-        match spawned_rt::tasks::timeout(timeout, wait_loop(rx)).await {
-            Ok(reason) => Some(reason),
-            Err(_) => None,
-        }
+        spawned_rt::tasks::timeout(timeout, wait_loop(rx))
+            .await
+            .ok()
     };
 
     match spawned_rt::tasks::Handle::try_current() {

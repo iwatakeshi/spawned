@@ -118,13 +118,13 @@ fn pg_leave_refcount_and_errors() {
         actor.request(JoinOnStart).await.unwrap();
 
         let id = actor.id();
-        tasks_pg::leave::<Coordinator>(&group, id).unwrap();
+        tasks_pg::leave(&group, id).unwrap();
         assert_eq!(tasks_pg::members::<Coordinator>(&group).len(), 1);
 
-        tasks_pg::leave::<Coordinator>(&group, id).unwrap();
+        tasks_pg::leave(&group, id).unwrap();
         assert!(tasks_pg::members::<Coordinator>(&group).is_empty());
 
-        let err = tasks_pg::leave::<Coordinator>(&group, id).unwrap_err();
+        let err = tasks_pg::leave(&group, id).unwrap_err();
         assert_eq!(err, PgError::NotJoined(id, group));
     });
 }

@@ -20,11 +20,7 @@ pub(crate) fn resolve_exit_reason(
     requested: &RequestedExitReason,
     linked_reason: &LinkedExitReason,
 ) -> ExitReason {
-    if let Some(reason) = requested
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .take()
-    {
+    if let Some(reason) = requested.lock().unwrap_or_else(|p| p.into_inner()).take() {
         return reason;
     }
     if matches!(exit_reason, ExitReason::Normal) {

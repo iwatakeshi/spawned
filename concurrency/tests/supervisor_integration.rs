@@ -204,7 +204,12 @@ mod tasks {
                 .start();
 
             assert!(
-                wait_until_all(&counts, &["alpha", "beta", "gamma"], 2, Duration::from_secs(2)),
+                wait_until_all(
+                    &counts,
+                    &["alpha", "beta", "gamma"],
+                    2,
+                    Duration::from_secs(2)
+                ),
                 "alpha={}, beta={}, gamma={}",
                 get_count(&counts, "alpha"),
                 get_count(&counts, "beta"),
@@ -388,10 +393,7 @@ mod tasks {
     #[test]
     fn worker_child_spec_defaults_to_otp_shutdown_timeout() {
         let spec = ChildSpec::worker("w", || Idler, RestartType::Permanent);
-        assert_eq!(
-            spec.shutdown,
-            ShutdownType::Timeout(Duration::from_secs(5))
-        );
+        assert_eq!(spec.shutdown, ShutdownType::Timeout(Duration::from_secs(5)));
     }
 
     #[test]
@@ -438,11 +440,9 @@ mod tasks {
             let handle = actor.child_handle();
 
             rt::sleep(Duration::from_millis(20)).await;
-            let reason = shutdown_child_async(
-                &handle,
-                ShutdownType::Timeout(Duration::from_millis(50)),
-            )
-            .await;
+            let reason =
+                shutdown_child_async(&handle, ShutdownType::Timeout(Duration::from_millis(50)))
+                    .await;
             assert_eq!(reason, ExitReason::Kill);
         });
     }
@@ -577,7 +577,9 @@ mod tasks {
 
 mod threads {
     use super::*;
-    use spawned_concurrency::threads::{Actor, ActorStart, ChildSpec, Context, Handler, Supervisor};
+    use spawned_concurrency::threads::{
+        Actor, ActorStart, ChildSpec, Context, Handler, Supervisor,
+    };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
 
@@ -698,10 +700,7 @@ mod threads {
     #[test]
     fn worker_child_spec_defaults_to_otp_shutdown_timeout() {
         let spec = ChildSpec::worker("w", || Idler, RestartType::Permanent);
-        assert_eq!(
-            spec.shutdown,
-            ShutdownType::Timeout(Duration::from_secs(5))
-        );
+        assert_eq!(spec.shutdown, ShutdownType::Timeout(Duration::from_secs(5)));
     }
 
     #[test]
@@ -732,7 +731,12 @@ mod threads {
             .start();
 
         assert!(
-            wait_until_all(&counts, &["alpha", "beta", "gamma"], 2, Duration::from_secs(2)),
+            wait_until_all(
+                &counts,
+                &["alpha", "beta", "gamma"],
+                2,
+                Duration::from_secs(2)
+            ),
             "alpha={}, beta={}, gamma={}",
             get_count(&counts, "alpha"),
             get_count(&counts, "beta"),
@@ -887,10 +891,8 @@ mod threads {
         let handle = actor.child_handle();
 
         thread::sleep(Duration::from_millis(20));
-        let reason = shutdown_child_blocking(
-            &handle,
-            ShutdownType::Timeout(Duration::from_millis(50)),
-        );
+        let reason =
+            shutdown_child_blocking(&handle, ShutdownType::Timeout(Duration::from_millis(50)));
         assert_eq!(reason, ExitReason::Kill);
     }
 

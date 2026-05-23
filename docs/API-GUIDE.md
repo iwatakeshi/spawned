@@ -352,7 +352,7 @@ use spawned_concurrency::tasks::pg as tasks_pg;   // typed ActorRef dispatch
 | Function | Description |
 |----------|-------------|
 | `pg::join(group, &actor_ref)` | Join for later message dispatch |
-| `pg::leave::<A>(group, id)` | Decrement membership |
+| `pg::leave(group, id)` | Decrement membership |
 | `pg::members::<A>(group)` | Live `ActorRef<A>` members |
 | `pg::local_members::<A>(group)` | Same as `members` on a single node |
 

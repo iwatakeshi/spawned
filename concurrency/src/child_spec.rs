@@ -69,9 +69,7 @@ pub async fn shutdown_child_async(handle: &ChildHandle, shutdown: ShutdownType) 
 
 /// Warn when a nested supervisor uses a finite shutdown timeout (OTP race risk).
 pub(crate) fn warn_supervisor_timeout(child_type: ChildType, shutdown: ShutdownType) {
-    if matches!(child_type, ChildType::Supervisor)
-        && matches!(shutdown, ShutdownType::Timeout(_))
-    {
+    if matches!(child_type, ChildType::Supervisor) && matches!(shutdown, ShutdownType::Timeout(_)) {
         tracing::warn!(
             "ChildSpec with ChildType::Supervisor and ShutdownType::Timeout may terminate \
              the subtree before nested children finish shutting down"
@@ -161,7 +159,10 @@ mod tests {
 
     #[test]
     fn default_worker_shutdown_is_five_second_timeout() {
-        assert_eq!(DEFAULT_WORKER_SHUTDOWN, ShutdownType::Timeout(Duration::from_secs(5)));
+        assert_eq!(
+            DEFAULT_WORKER_SHUTDOWN,
+            ShutdownType::Timeout(Duration::from_secs(5))
+        );
     }
 
     #[test]
@@ -244,10 +245,7 @@ mod tests {
 
     #[test]
     fn permanent_restarts_on_normal_and_abnormal_but_not_shutdown() {
-        assert!(should_restart(
-            RestartType::Permanent,
-            &ExitReason::Normal
-        ));
+        assert!(should_restart(RestartType::Permanent, &ExitReason::Normal));
         assert!(should_restart(
             RestartType::Permanent,
             &ExitReason::Panic("x".into())
@@ -260,10 +258,7 @@ mod tests {
 
     #[test]
     fn transient_restarts_only_on_abnormal() {
-        assert!(!should_restart(
-            RestartType::Transient,
-            &ExitReason::Normal
-        ));
+        assert!(!should_restart(RestartType::Transient, &ExitReason::Normal));
         assert!(!should_restart(
             RestartType::Transient,
             &ExitReason::Shutdown
