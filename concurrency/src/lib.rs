@@ -83,6 +83,7 @@ pub mod message;
 pub mod monitor;
 pub mod registry;
 pub mod response;
+pub mod supervisor;
 pub mod tasks;
 pub mod threads;
 
@@ -94,4 +95,5 @@ pub use error::{ActorError, ExitReason};
 pub use link::Exit;
 pub use monitor::{Down, MonitorRef};
 pub use response::Response;
+pub use supervisor::SupervisorStrategy;
 pub use spawned_macros::{actor, protocol};
