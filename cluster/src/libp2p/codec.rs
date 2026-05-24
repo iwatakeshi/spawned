@@ -6,7 +6,7 @@ use futures::{AsyncRead, AsyncWrite};
 use libp2p::StreamProtocol;
 use std::io;
 
-pub const CLUSTER_PROTOCOL: StreamProtocol = StreamProtocol::new("/spawned/cluster/2");
+pub const CLUSTER_PROTOCOL: StreamProtocol = StreamProtocol::new("/spawned/cluster/3");
 
 #[derive(Clone, Default)]
 pub struct ClusterCodec;

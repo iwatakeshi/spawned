@@ -272,7 +272,7 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 ### 10.3. libp2p transport — shipped
 
 - Optional `libp2p` feature on `spawned-cluster` (`Libp2pCluster`, `Libp2pPeer`)
-- Same `ClusterFrame` protocol as TCP over libp2p request-response (`/spawned/cluster/2`)
+- Same `ClusterFrame` protocol as TCP over libp2p request-response (`/spawned/cluster/3`)
 - Static peer map: `NodeId` → `PeerId` + `Multiaddr` (Erlang-style node names)
 - Background swarm thread; sync `Transport` methods via command channel
 - Control-plane snapshots on connect (registry + pg); deferred sends until peer connected
@@ -299,6 +299,23 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 | Phase | Focus |
 |-------|--------|
 | **11.2** | Async remote requests — shipped |
+
+### 12.1. Supervision control plane protocol — shipped
+
+- `ClusterFrame::Supervision(SupervisionEnvelope)` — routed unicast (not federated broadcast)
+- Wire types: `SupervisionEvent`, `RemoteSpawnSpec`, `WireExitReason`, `SupervisionSignal`
+- `SupervisionEnvelope` correlation id for RPC vs fire-and-forget
+- Correlated replies: raw `SupervisionEnvelope` bytes (not `WireReply`)
+- `ControlPlaneHooks::with_supervision`; `stub_supervision_hooks()` for integration tests
+- TCP: `send_supervision` / `request_supervision`; libp2p: `send_supervision_to` / `request_supervision_from`
+- Wire protocol version bumped to **3** (`/spawned/cluster/3`)
+- No connect-time supervision snapshot; no `SupervisionBroker` yet (Phase 12.2)
+- `install_supervision_sync` publish hook stub in `spawned-concurrency`
+- Integration tests: `cluster/tests/supervision_protocol.rs`, `supervision_tcp_roundtrip.rs`, `supervision_libp2p_roundtrip.rs`
+
+| Phase | Focus |
+|-------|--------|
+| **12.1** | Supervision protocol + control plane hooks — shipped |
 
 ## Future Considerations
 

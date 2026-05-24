@@ -6,9 +6,13 @@ use crate::control::ControlPlaneHooks;
 use crate::pg_sync::encode_pg_event;
 use crate::protocol::{
     decode_cluster_frame, decode_reply_frame, encode_cluster_frame, encode_reply, ClusterFrame,
-    RegistryEvent, WireReply,
+    RegistryEvent, SupervisionEnvelope, WireReply,
 };
 use crate::registry::encode_registry_event;
+use crate::supervision_sync::{
+    apply_supervision, decode_supervision_reply, encode_supervision, encode_supervision_frame,
+};
+use crate::supervision_validate::validate_envelope;
 use crate::{AsyncTransport, InboundDispatch, Transport, TransportError};
 use codec::ClusterCodec;
 use futures::StreamExt;
@@ -239,6 +243,40 @@ impl Libp2pCluster {
             self.sync_peer(peer_id)?;
         }
         Ok(())
+    }
+
+    /// Send a fire-and-forget supervision envelope to a specific node.
+    pub fn send_supervision_to(
+        &self,
+        node: &NodeId,
+        envelope: SupervisionEnvelope,
+    ) -> Result<(), TransportError> {
+        validate_envelope(&envelope)?;
+        if envelope.correlation_id != 0 {
+            return Err(TransportError::Protocol(
+                "send_supervision requires correlation_id 0".into(),
+            ));
+        }
+        let bytes = encode_supervision_frame(&envelope)?;
+        self.send_frame(node, bytes, false)?;
+        Ok(())
+    }
+
+    /// Send a correlated supervision request and read the reply envelope.
+    pub fn request_supervision_from(
+        &self,
+        node: &NodeId,
+        envelope: SupervisionEnvelope,
+    ) -> Result<SupervisionEnvelope, TransportError> {
+        validate_envelope(&envelope)?;
+        let bytes = encode_supervision_frame(&envelope)?;
+        let reply_bytes = self.send_frame(node, bytes, true)?;
+        if reply_bytes.is_empty() {
+            return Err(TransportError::Protocol(
+                "supervision request received empty reply".into(),
+            ));
+        }
+        decode_supervision_reply(&envelope, &reply_bytes)
     }
 
     fn broadcast_frame(&self, frame: Vec<u8>) -> Result<(), TransportError> {
@@ -765,6 +803,10 @@ fn apply_inbound_frame(frame: &[u8], control: &ControlPlaneHooks) -> Result<(), 
             crate::registry::apply_registry_event(&control.registry, event)
         }
         ClusterFrame::Pg(event) => crate::pg_sync::apply_pg_event(&control.pg, event),
+        ClusterFrame::Supervision(envelope) => {
+            let _ = apply_supervision(&control.supervision, envelope)?;
+            Ok(())
+        }
         ClusterFrame::Actor(_) => Ok(()),
     }
 }
@@ -782,6 +824,13 @@ fn handle_inbound_frame(
         ClusterFrame::Pg(event) => {
             crate::pg_sync::apply_pg_event(&control.pg, event)?;
             Ok(Vec::new())
+        }
+        ClusterFrame::Supervision(envelope) => {
+            if let Some(reply) = apply_supervision(&control.supervision, envelope)? {
+                encode_supervision(&reply).map_err(TransportError::from)
+            } else {
+                Ok(Vec::new())
+            }
         }
         ClusterFrame::Actor(envelope) => {
             let correlation_id = envelope.correlation_id;

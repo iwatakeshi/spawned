@@ -6,6 +6,7 @@ use crate::protocol::{
     Handshake, WireReply, PROTOCOL_VERSION,
 };
 use crate::registry::{apply_registry_event, RegistryHooks};
+use crate::supervision_sync::{apply_supervision, encode_supervision};
 use crate::{InboundDispatch, TransportError};
 use spawned_address::NodeId;
 use std::io::Read;
@@ -47,6 +48,7 @@ impl TcpClusterListener {
             ControlPlaneHooks {
                 registry,
                 pg: crate::pg_sync::PgHooks::none(),
+                supervision: crate::supervision_sync::SupervisionHooks::none(),
             },
         )
     }
@@ -175,6 +177,12 @@ fn serve_connection(
                         payload: reply.unwrap_or_default(),
                     };
                     let bytes = encode_reply(&wire_reply)?;
+                    write_frame(&mut stream, &bytes)?;
+                }
+            }
+            ClusterFrame::Supervision(envelope) => {
+                if let Some(reply) = apply_supervision(&control.supervision, envelope)? {
+                    let bytes = encode_supervision(&reply)?;
                     write_frame(&mut stream, &bytes)?;
                 }
             }

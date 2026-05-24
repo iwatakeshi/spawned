@@ -8,6 +8,7 @@ mod node;
 mod pg_sync;
 mod registry_sync;
 mod remote_actor_ref;
+mod supervision_sync;
 mod wire_dispatch;
 
 pub use named_registry::{
@@ -17,6 +18,7 @@ pub use named_registry::{
 pub use node::{Node, NodeBuilder, NodeError};
 pub use pg_sync::install_pg_sync;
 pub use registry_sync::install_registry_sync;
+pub use supervision_sync::install_supervision_sync;
 pub use remote_actor_ref::{RemoteActorRef, RemoteRequest};
 pub use wire_dispatch::{tasks_wire_dispatch, threads_wire_dispatch};
 
@@ -26,8 +28,10 @@ pub use crate::pg::{
 
 pub use spawned_cluster::{
     AddressDispatch, AsyncTransport, ClusterFrame, ClusterRouter, ControlPlaneHooks, InboundDispatch,
-    PgEvent, PgMemberEntry, RegistryEvent, RegistryHooks, TcpAsyncTransport, TcpClusterListener,
-    TcpTransport, Transport, TransportError, UnavailableTransport, WireReply, PROTOCOL_VERSION,
+    PgEvent, PgMemberEntry, RegistryEvent, RegistryHooks, RemoteSpawnSpec, RemoteSpecOverrides,
+    SupervisionEnvelope, SupervisionEvent, SupervisionHooks, SupervisionSignal, TcpAsyncTransport,
+    TcpClusterListener, TcpTransport, Transport, TransportError, UnavailableTransport,
+    WireExitReason, WireReply, WireRestartType, PROTOCOL_VERSION, MAX_REMOTE_SPAWN_INIT_BYTES,
 };
 
 #[cfg(feature = "cluster-libp2p")]

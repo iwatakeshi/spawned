@@ -114,7 +114,7 @@ let remote = RemoteActorRef::<Ping>::remote(addr, node.router());
 
 ## Phase 8c: TCP transport
 
-- **Length-framed TCP** — u32 big-endian + postcard payload; handshake (`PROTOCOL_VERSION`, `NodeId`)
+- **Length-framed TCP** — u32 big-endian + postcard payload; handshake (`PROTOCOL_VERSION = 3`, `NodeId`)
 - **`TcpTransport`** — client-side `Transport` with peer `SocketAddr` map and connection pooling
 - **`TcpClusterListener`** — accept loop + `InboundDispatch` for inbound envelopes
 - **`tasks_wire_dispatch` / `threads_wire_dispatch`** — bridge wire envelopes to local `Recipient`s
@@ -142,7 +142,7 @@ remote.send(Ping { n: 1 })?;
 
 ## Phase 10.3: libp2p transport
 
-Optional feature on `spawned-cluster` — same `ClusterFrame` wire format as TCP, carried over libp2p request-response (`/spawned/cluster/2`).
+Optional feature on `spawned-cluster` — same `ClusterFrame` wire format as TCP, carried over libp2p request-response (`/spawned/cluster/3`).
 
 ```toml
 spawned-cluster = { version = "...", features = ["libp2p"] }
@@ -217,13 +217,29 @@ let pong = remote.request_async(Ping { n: 1 }).await?;
 
 Sync `request_raw` remains for threads mode and legacy call sites.
 
+## Phase 12.1: Supervision control plane (wire only)
+
+Supervision events use a **routed** control plane — unicast to a target node, not federated broadcast like registry/pg.
+
+- `ClusterFrame::Supervision(SupervisionEnvelope)` on TCP and libp2p
+- `SupervisionEnvelope { correlation_id, event }` — non-zero id for RPC (`SpawnRequest` → `SpawnOk`/`SpawnErr`); zero for fire-and-forget (`ChildExit`, `Monitor`, `Link`, …)
+- Correlated replies are raw `SupervisionEnvelope` bytes (not `WireReply`)
+- Connect handshake stays two frames (registry + pg snapshots); no supervision snapshot on connect
+- Wire protocol version **3** (`PROTOCOL_VERSION` / `/spawned/cluster/3`); mixed v2/v3 clusters fail at handshake
+- `TcpTransport::send_supervision` / `request_supervision`; `Libp2pCluster::send_supervision_to` / `request_supervision_from`
+- `ControlPlaneHooks::with_supervision` installs inbound handler; `stub_supervision_hooks()` for tests
+- `install_supervision_sync` publish hook stub in `spawned-concurrency` (broker wiring in Phase 12.2)
+- Max remote worker init payload: 64 KiB (`MAX_REMOTE_SPAWN_INIT_BYTES`)
+
+Integration tests: `cluster/tests/supervision_protocol.rs`, `supervision_tcp_roundtrip.rs`, `supervision_libp2p_roundtrip.rs`.
+
 ### Clustering checklist (every feature PR)
 
 1. **Address, not local id** — Public handles that may be grouped or looked up use `ActorAddress`.
 2. **Serializable boundary** — Cross-node messages implement `RemoteMessage`. Control plane (`Exit`, stop, OS signals) stays local.
 3. **Registry names are global** — Named registration implies cluster-wide uniqueness (federation in Phase 10).
 4. **pg members are addresses** — Internal pg keys use `ActorAddress`; local join fills in `local_node()`.
-5. **Supervision stays local-first** — Restart/stop/kill target local mailboxes until remote supervision is designed.
+5. **Supervision stays local-first** — Restart/stop/kill target local mailboxes until Phase 12.2 broker ships.
 6. **Threads mode** — Address/wire types are sync-safe; remote I/O may delegate to a cluster runtime (tasks MVP first).
 
 ## Roadmap (summary)
@@ -240,5 +256,6 @@ Sync `request_raw` remains for threads mode and legacy call sites.
 | **10.3** | libp2p transport (this document) |
 | **11.1** | NodeBuilder libp2p bootstrap (this document) |
 | **11.2** | Async remote requests (this document) |
+| **12.1** | Supervision control plane protocol (this document) |
 
 See [ROADMAP.md](ROADMAP.md) for full detail.

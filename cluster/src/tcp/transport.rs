@@ -3,9 +3,13 @@ use crate::frame::{read_frame, write_frame};
 use crate::pg_sync::encode_pg_event;
 use crate::protocol::{
     decode_handshake, decode_reply_frame, encode_cluster_frame,
-    encode_handshake, ClusterFrame, Handshake, PROTOCOL_VERSION,
+    encode_handshake, ClusterFrame, Handshake, PROTOCOL_VERSION, SupervisionEnvelope,
 };
 use crate::registry::encode_registry_event;
+use crate::supervision_sync::{
+    decode_supervision_reply, encode_supervision_frame,
+};
+use crate::supervision_validate::validate_envelope;
 use crate::{AsyncTransport, Transport, TransportError};
 use spawned_address::NodeId;
 use spawned_wire::WireEnvelope;
@@ -88,6 +92,49 @@ impl TcpTransport {
             self.with_connection(&node, |_stream| Ok(()))?;
         }
         Ok(())
+    }
+
+    /// Send a fire-and-forget supervision envelope to a specific node.
+    pub fn send_supervision(
+        &self,
+        node: &NodeId,
+        envelope: SupervisionEnvelope,
+    ) -> Result<(), TransportError> {
+        validate_envelope(&envelope)?;
+        if envelope.correlation_id != 0 {
+            return Err(TransportError::Protocol(
+                "send_supervision requires correlation_id 0".into(),
+            ));
+        }
+        self.with_connection(node, |stream| Self::send_supervision_on_stream(stream, envelope))
+    }
+
+    /// Send a correlated supervision request and read the reply envelope.
+    pub fn request_supervision(
+        &self,
+        node: &NodeId,
+        envelope: SupervisionEnvelope,
+    ) -> Result<SupervisionEnvelope, TransportError> {
+        validate_envelope(&envelope)?;
+        self.with_connection(node, |stream| Self::request_supervision_on_stream(stream, envelope))
+    }
+
+    fn send_supervision_on_stream(
+        stream: &mut TcpStream,
+        envelope: SupervisionEnvelope,
+    ) -> Result<(), TransportError> {
+        let bytes = encode_supervision_frame(&envelope)?;
+        write_frame(&mut *stream, &bytes)
+    }
+
+    fn request_supervision_on_stream(
+        stream: &mut TcpStream,
+        envelope: SupervisionEnvelope,
+    ) -> Result<SupervisionEnvelope, TransportError> {
+        let bytes = encode_supervision_frame(&envelope)?;
+        write_frame(&mut *stream, &bytes)?;
+        let reply_frame = read_frame(&mut *stream)?;
+        decode_supervision_reply(&envelope, &reply_frame)
     }
 
     fn connect(&self, node: &NodeId) -> Result<TcpStream, TransportError> {

@@ -1,13 +1,15 @@
-//! Control-plane replication hooks (registry + pg).
+//! Control-plane replication hooks (registry + pg + supervision).
 
 use crate::pg_sync::{apply_pg_event, PgHooks};
 use crate::protocol::{PgEvent, RegistryEvent};
 use crate::registry::{apply_registry_event, RegistryHooks};
+use crate::supervision_sync::SupervisionHooks;
 
 #[derive(Clone)]
 pub struct ControlPlaneHooks {
     pub registry: RegistryHooks,
     pub pg: PgHooks,
+    pub supervision: SupervisionHooks,
 }
 
 impl ControlPlaneHooks {
@@ -15,6 +17,7 @@ impl ControlPlaneHooks {
         Self {
             registry: RegistryHooks::none(),
             pg: PgHooks::none(),
+            supervision: SupervisionHooks::none(),
         }
     }
 
@@ -27,7 +30,13 @@ impl ControlPlaneHooks {
         Self {
             registry: RegistryHooks::from_fns(registry_apply, registry_snapshot),
             pg: PgHooks::from_fns(pg_apply, pg_snapshot),
+            supervision: SupervisionHooks::none(),
         }
+    }
+
+    pub fn with_supervision(mut self, supervision: SupervisionHooks) -> Self {
+        self.supervision = supervision;
+        self
     }
 }
 
