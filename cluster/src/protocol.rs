@@ -155,6 +155,7 @@ pub enum SupervisionEvent {
     },
     Demonitor {
         owner: ActorAddress,
+        target: ActorAddress,
         monitor_ref: u64,
     },
     Link {

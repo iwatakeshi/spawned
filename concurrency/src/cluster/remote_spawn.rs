@@ -35,6 +35,39 @@ where
         .map_err(|e| format!("remote worker spawn failed: {e}"))
 }
 
+/// Run a background task on the installed tasks runtime (TCP listener threads).
+pub(crate) fn spawn_on_runtime<F>(f: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    if let Ok(handle) = spawned_rt::tasks::Handle::try_current() {
+        handle.spawn(async move {
+            let _ = spawned_rt::tasks::spawn_blocking(f).await;
+        });
+        return;
+    }
+    if let Some(handle) = TASKS_RUNTIME.get() {
+        let handle = handle.clone();
+        handle.spawn(async move {
+            let _ = spawned_rt::tasks::spawn_blocking(f).await;
+        });
+    }
+}
+
+/// Run an async background task on the installed tasks runtime.
+pub(crate) fn spawn_async_on_runtime<F>(f: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    if let Ok(handle) = spawned_rt::tasks::Handle::try_current() {
+        handle.spawn(f);
+        return;
+    }
+    if let Some(handle) = TASKS_RUNTIME.get() {
+        handle.clone().spawn(f);
+    }
+}
+
 /// Where a supervised child should run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Placement {

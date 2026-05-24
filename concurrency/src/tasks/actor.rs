@@ -38,6 +38,9 @@ use std::{
 /// clones via `Arc`.
 type MonitorTable = Arc<Mutex<HashMap<MonitorRef, Arc<AtomicBool>>>>;
 
+#[cfg(feature = "cluster")]
+type RemoteMonitorTable = Arc<Mutex<HashMap<MonitorRef, spawned_address::ActorAddress>>>;
+
 pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
 
 // ---------------------------------------------------------------------------
@@ -151,6 +154,8 @@ pub struct Context<A: Actor> {
     cancellation_token: CancellationToken,
     completion_rx: watch::Receiver<Option<ExitReason>>,
     monitors: MonitorTable,
+    #[cfg(feature = "cluster")]
+    remote_monitors: RemoteMonitorTable,
     trap_exit: TrapExitFlag,
     links: LinkTable,
     linked_reason: LinkedExitReason,
@@ -167,6 +172,8 @@ impl<A: Actor> Clone for Context<A> {
             cancellation_token: self.cancellation_token.clone(),
             completion_rx: self.completion_rx.clone(),
             monitors: self.monitors.clone(),
+            #[cfg(feature = "cluster")]
+            remote_monitors: self.remote_monitors.clone(),
             trap_exit: self.trap_exit.clone(),
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
@@ -193,6 +200,8 @@ impl<A: Actor> Context<A> {
             cancellation_token: actor_ref.cancellation_token.clone(),
             completion_rx: actor_ref.completion_rx.clone(),
             monitors: actor_ref.monitors.clone(),
+            #[cfg(feature = "cluster")]
+            remote_monitors: actor_ref.remote_monitors.clone(),
             trap_exit: actor_ref.trap_exit.clone(),
             links: actor_ref.links.clone(),
             linked_reason: actor_ref.linked_reason.clone(),
@@ -288,6 +297,8 @@ impl<A: Actor> Context<A> {
             cancellation_token: self.cancellation_token.clone(),
             completion_rx: self.completion_rx.clone(),
             monitors: self.monitors.clone(),
+            #[cfg(feature = "cluster")]
+            remote_monitors: self.remote_monitors.clone(),
             trap_exit: self.trap_exit.clone(),
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
@@ -351,12 +362,53 @@ impl<A: Actor> Context<A> {
         monitor_ref
     }
 
+    /// Monitor an actor by cluster address (local or remote).
+    #[cfg(feature = "cluster")]
+    pub fn monitor_address(&self, target: &spawned_address::ActorAddress) -> MonitorRef
+    where
+        A: Handler<Down>,
+    {
+        use crate::cluster::{is_local_address, local_handle, publish_monitor};
+
+        if is_local_address(target) {
+            let handle = local_handle(target.actor_id).unwrap_or_else(|| {
+                panic!(
+                    "local monitor target {} is not registered with the supervision broker",
+                    target.actor_id
+                )
+            });
+            return self.monitor(&handle);
+        }
+
+        let monitor_ref = MonitorRef::next();
+        let active = Arc::new(AtomicBool::new(true));
+        self.monitors
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(monitor_ref, active);
+        self.remote_monitors
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(monitor_ref, target.clone());
+        publish_monitor(self.actor_address(), target.clone(), monitor_ref);
+        monitor_ref
+    }
+
     /// Cancel a previously-set monitor.
     ///
     /// If the target hasn't yet died, no `Down` message will be delivered.
     /// If a `Down` message has already been delivered (or queued), this is
     /// a best-effort cancellation — the message may still arrive.
     pub fn demonitor(&self, monitor_ref: MonitorRef) {
+        #[cfg(feature = "cluster")]
+        if let Some(target) = self
+            .remote_monitors
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&monitor_ref)
+        {
+            crate::cluster::publish_demonitor(self.actor_address(), target, monitor_ref);
+        }
         if let Some(active) = self
             .monitors
             .lock()
@@ -481,6 +533,8 @@ pub struct ActorRef<A: Actor> {
     cancellation_token: CancellationToken,
     completion_rx: watch::Receiver<Option<ExitReason>>,
     monitors: MonitorTable,
+    #[cfg(feature = "cluster")]
+    remote_monitors: RemoteMonitorTable,
     trap_exit: TrapExitFlag,
     links: LinkTable,
     linked_reason: LinkedExitReason,
@@ -503,6 +557,8 @@ impl<A: Actor> Clone for ActorRef<A> {
             cancellation_token: self.cancellation_token.clone(),
             completion_rx: self.completion_rx.clone(),
             monitors: self.monitors.clone(),
+            #[cfg(feature = "cluster")]
+            remote_monitors: self.remote_monitors.clone(),
             trap_exit: self.trap_exit.clone(),
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
@@ -690,6 +746,8 @@ impl<A: Actor> ActorRef<A> {
         });
         let (completion_tx, completion_rx) = watch::channel(None);
         let monitors: MonitorTable = Arc::new(Mutex::new(HashMap::new()));
+        #[cfg(feature = "cluster")]
+        let remote_monitors: RemoteMonitorTable = Arc::new(Mutex::new(HashMap::new()));
         let trap_exit = new_trap_exit_flag();
         let links = new_link_table();
         let linked_reason = new_linked_exit_reason();
@@ -702,6 +760,8 @@ impl<A: Actor> ActorRef<A> {
             cancellation_token: cancellation_token.clone(),
             completion_rx,
             monitors: monitors.clone(),
+            #[cfg(feature = "cluster")]
+            remote_monitors: remote_monitors.clone(),
             trap_exit: trap_exit.clone(),
             links: links.clone(),
             linked_reason: linked_reason.clone(),
@@ -716,6 +776,8 @@ impl<A: Actor> ActorRef<A> {
             cancellation_token: cancellation_token.clone(),
             completion_rx: actor_ref.completion_rx.clone(),
             monitors,
+            #[cfg(feature = "cluster")]
+            remote_monitors,
             trap_exit,
             links: links.clone(),
             linked_reason: linked_reason.clone(),

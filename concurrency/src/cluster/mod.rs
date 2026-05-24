@@ -11,6 +11,7 @@ mod remote_actor_ref;
 pub(crate) mod remote_spawn;
 mod supervision_broker;
 mod supervision_exit;
+mod supervision_monitor;
 mod supervision_routing;
 mod supervision_sync;
 mod wire_dispatch;
@@ -25,8 +26,11 @@ pub use registry_sync::install_registry_sync;
 pub use remote_spawn::{
     install_tasks_runtime, request_spawn, Placement, RemoteChildHandle, RemoteSpawnError,
 };
+pub use supervision_monitor::{
+    is_local_address, publish_demonitor, publish_monitor, register_supervision_monitor_owner,
+};
 pub use supervision_broker::{
-    install_supervision_broker, register_supervision_actor, start_supervision_broker,
+    install_supervision_broker, local_handle, register_supervision_actor, start_supervision_broker,
     SupervisionBroker, SupervisionBrokerInner,
 };
 pub use supervision_routing::{publish_routed, route_node};

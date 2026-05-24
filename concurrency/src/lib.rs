@@ -80,8 +80,9 @@ pub use supervisor::SupervisorStrategy;
 #[cfg(feature = "cluster")]
 pub use cluster::{
     apply_remote_pg_event, install_pg_sync, install_supervision_request, install_tasks_runtime,
-    install_supervision_broker, local_pg_snapshot, lookup_address, lookup_handle, register_named,
-    register_supervision_actor, unregister_named, tasks_wire_dispatch,
+    install_supervision_broker, local_handle, local_pg_snapshot, lookup_address, lookup_handle,
+    register_named, register_supervision_actor, register_supervision_monitor_owner,
+    unregister_named, tasks_wire_dispatch,
     threads_wire_dispatch, AsyncTransport, ClusterRouter, ControlPlaneHooks, InboundDispatch,
     NamedRegistryError, Node, NodeBuilder, NodeError, PgEvent, PgMemberEntry, Placement,
     RemoteActorRef, RemoteChildHandle, RemoteRequest, RemoteSpawnError, TcpAsyncTransport,

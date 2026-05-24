@@ -11,7 +11,7 @@ pub fn route_node(event: &SupervisionEvent) -> Option<NodeId> {
         SupervisionEvent::ChildExit { parent, .. } => Some(parent.node.clone()),
         SupervisionEvent::Down { owner, .. } => Some(owner.node.clone()),
         SupervisionEvent::Monitor { target, .. } => Some(target.node.clone()),
-        SupervisionEvent::Demonitor { owner, .. } => Some(owner.node.clone()),
+        SupervisionEvent::Demonitor { target, .. } => Some(target.node.clone()),
         SupervisionEvent::Link { .. } | SupervisionEvent::Unlink { .. } => None,
         SupervisionEvent::SpawnOk { .. } | SupervisionEvent::SpawnErr { .. } => None,
     }

@@ -23,6 +23,15 @@ impl MonitorRef {
     pub(crate) fn next() -> Self {
         Self(NEXT_MONITOR_ID.fetch_add(1, Ordering::Relaxed))
     }
+
+    /// Wire-format monitor id (`SupervisionEvent::Monitor::monitor_ref`).
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+
+    pub(crate) fn from_raw(id: u64) -> Self {
+        Self(id)
+    }
 }
 
 impl std::fmt::Display for MonitorRef {

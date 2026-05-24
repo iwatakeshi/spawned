@@ -338,7 +338,7 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 - `install_tasks_runtime` — dispatch worker starts from TCP listener threads onto the app runtime
 - Integration test: `concurrency/tests/supervision_spawn_two_node.rs`
 
-Deferred to **12.5+**: cross-node monitor/link, static supervisor `ChildSpec::placement` (12.7).
+Deferred to **12.6+**: cross-node link, static supervisor `ChildSpec::placement` (12.7).
 
 | Phase | Focus |
 |-------|--------|
@@ -355,6 +355,20 @@ Deferred to **12.5+**: cross-node monitor/link, static supervisor `ChildSpec::pl
 | Phase | Focus |
 |-------|--------|
 | **12.4** | ChildExit propagation + remote restart — shipped |
+
+### 12.5. Cross-node monitor propagation — shipped
+
+- `Context::monitor_address(&ActorAddress)` — local targets use existing `monitor`; remote targets publish `Monitor` to the placement node
+- `Context::demonitor` publishes `Demonitor` for remote monitors; broker wait tasks emit `Down` on target exit
+- `register_supervision_monitor_owner` — local actors receive inbound remote `Down` messages
+- Wire `Demonitor` includes `target` address (routes to placement node)
+- Integration test: `concurrency/tests/supervision_monitor_two_node.rs`
+
+Deferred to **12.6**: cross-node link/unlink propagation.
+
+| Phase | Focus |
+|-------|--------|
+| **12.5** | Cross-node monitor propagation — shipped |
 
 ## Future Considerations
 

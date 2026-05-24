@@ -113,6 +113,7 @@ fn supervision_event_variants_roundtrip() {
         },
         SupervisionEvent::Demonitor {
             owner: owner.clone(),
+            target: target.clone(),
             monitor_ref: 7,
         },
         SupervisionEvent::Link {

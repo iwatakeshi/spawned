@@ -286,6 +286,20 @@ When a remotely spawned linked child dies on the placement node:
 
 Integration test: `concurrency/tests/supervision_exit_two_node.rs` (remote stop → ChildExit → restart).
 
+### Phase 12.5: Cross-node monitor propagation (shipped)
+
+When an actor on node A monitors a remote actor on node B:
+
+1. Client publishes `Monitor { owner, target, monitor_ref }` to **B** (target's node)
+2. Placement-node broker installs a local wait on the target `ChildHandle`
+3. On target exit, broker publishes `Down { owner, monitor_ref, child, reason }` to **A**
+4. Home-node broker delivers `Down` to the registered monitor owner via `register_supervision_monitor_owner`
+5. `Context::demonitor` publishes `Demonitor { owner, target, monitor_ref }` to **B** to cancel the wait
+
+`Demonitor` wire events include the `target` address (Phase 12.5 breaking change within protocol v3).
+
+Integration test: `concurrency/tests/supervision_monitor_two_node.rs`.
+
 ### Clustering checklist (every feature PR)
 
 1. **Address, not local id** — Public handles that may be grouped or looked up use `ActorAddress`.
@@ -313,5 +327,6 @@ Integration test: `concurrency/tests/supervision_exit_two_node.rs` (remote stop 
 | **12.2** | SupervisionBroker + Node wiring (this document) |
 | **12.3** | Remote spawn registry + DynamicSupervisor API (this document) |
 | **12.4** | ChildExit propagation + remote restart (this document) |
+| **12.5** | Cross-node monitor propagation (this document) |
 
 See [ROADMAP.md](ROADMAP.md) for full detail.

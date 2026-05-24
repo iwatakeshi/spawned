@@ -3,12 +3,16 @@
 use crate::child_handle::{ActorId, ChildHandle};
 use crate::cluster::remote_spawn;
 use crate::cluster::supervision_exit::{child_exit_envelope, wire_to_exit_reason};
+use crate::cluster::supervision_monitor::{self, SendDownFn};
+use crate::error::ExitReason;
 use crate::link::Exit;
+use crate::monitor::{Down, MonitorRef};
 use spawned_address::{ActorAddress, NodeId};
 use spawned_cluster::{
     SupervisionEnvelope, SupervisionEvent, SupervisionSignal, TransportError, WireExitReason,
 };
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 static BROKER: OnceLock<RwLock<Option<Arc<SupervisionBrokerInner>>>> = OnceLock::new();
@@ -34,13 +38,46 @@ pub fn register_supervision_actor(
     inner.register(address, handle)
 }
 
+/// Register a local actor to receive inbound remote [`Down`] messages.
+pub fn register_down_owner(
+    address: ActorAddress,
+    send_down: SendDownFn,
+) -> Result<(), TransportError> {
+    let guard = broker_slot().read().unwrap_or_else(|p| p.into_inner());
+    let inner = guard.as_ref().ok_or_else(|| {
+        TransportError::Protocol("supervision broker not installed".into())
+    })?;
+    inner.register_down_owner(address, send_down)
+}
+
+/// Lookup a locally registered supervision handle (if any).
+pub fn local_handle(actor_id: ActorId) -> Option<ChildHandle> {
+    let guard = broker_slot().read().unwrap_or_else(|p| p.into_inner());
+    let inner = guard.as_ref()?;
+    inner.local_handle(actor_id)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct MonitorKey {
+    owner: ActorAddress,
+    monitor_ref: u64,
+}
+
+struct InstalledMonitor {
+    active: Arc<AtomicBool>,
+}
+
 /// Shared broker state (sync inbound hook + actor shell).
-#[derive(Debug)]
 pub struct SupervisionBrokerInner {
     local: NodeId,
     handles: RwLock<HashMap<ActorId, ChildHandle>>,
     /// Remote parent address for each locally spawned child (Phase 12.4 ChildExit).
     parents: RwLock<HashMap<ActorId, ActorAddress>>,
+    /// Remote monitors installed on this node (Phase 12.5).
+    monitors: Arc<RwLock<HashMap<MonitorKey, InstalledMonitor>>>,
+    down_owners: RwLock<HashMap<ActorId, SendDownFn>>,
+    /// Exit reasons for actors removed from `handles` (late remote monitors).
+    exited: RwLock<HashMap<ActorId, ExitReason>>,
     broker_handle: RwLock<Option<ChildHandle>>,
 }
 
@@ -50,8 +87,37 @@ impl SupervisionBrokerInner {
             local,
             handles: RwLock::new(HashMap::new()),
             parents: RwLock::new(HashMap::new()),
+            monitors: Arc::new(RwLock::new(HashMap::new())),
+            down_owners: RwLock::new(HashMap::new()),
+            exited: RwLock::new(HashMap::new()),
             broker_handle: RwLock::new(None),
         }
+    }
+
+    pub fn local_handle(&self, actor_id: ActorId) -> Option<ChildHandle> {
+        self.handles
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&actor_id)
+            .cloned()
+    }
+
+    pub fn register_down_owner(
+        &self,
+        address: ActorAddress,
+        send_down: SendDownFn,
+    ) -> Result<(), TransportError> {
+        if address.node != self.local {
+            return Err(TransportError::Protocol(format!(
+                "down owner {} is not local ({})",
+                address.node, self.local
+            )));
+        }
+        self.down_owners
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(address.actor_id, send_down);
+        Ok(())
     }
 
     pub fn local_node(&self) -> &NodeId {
@@ -117,6 +183,31 @@ impl SupervisionBrokerInner {
                 reason,
             } => {
                 self.apply_child_exit(child, parent, reason)?;
+                Ok(None)
+            }
+            SupervisionEvent::Monitor {
+                owner,
+                target,
+                monitor_ref,
+            } => {
+                self.apply_monitor(owner, target, monitor_ref)?;
+                Ok(None)
+            }
+            SupervisionEvent::Demonitor {
+                owner,
+                target,
+                monitor_ref,
+            } => {
+                self.apply_demonitor(owner, target, monitor_ref);
+                Ok(None)
+            }
+            SupervisionEvent::Down {
+                owner,
+                monitor_ref,
+                child: _,
+                reason,
+            } => {
+                self.apply_down(owner, monitor_ref, reason)?;
                 Ok(None)
             }
             _ => Ok(None),
@@ -213,6 +304,141 @@ impl SupervisionBrokerInner {
         Ok(())
     }
 
+    fn apply_monitor(
+        &self,
+        owner: ActorAddress,
+        target: ActorAddress,
+        monitor_ref: u64,
+    ) -> Result<(), TransportError> {
+        if target.node != self.local {
+            return Err(TransportError::Protocol(format!(
+                "Monitor target {} is not on this node ({})",
+                target.node, self.local
+            )));
+        }
+        let handle = match self
+            .handles
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&target.actor_id)
+            .cloned()
+        {
+            Some(handle) => handle,
+            None => {
+                if let Some(reason) = self
+                    .exited
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(&target.actor_id)
+                    .cloned()
+                {
+                    supervision_monitor::publish_down(
+                        owner,
+                        MonitorRef::from_raw(monitor_ref),
+                        target,
+                        &reason,
+                    );
+                    return Ok(());
+                }
+                return Err(TransportError::Protocol(format!(
+                    "Monitor: unknown local target actor {}",
+                    target.actor_id
+                )));
+            }
+        };
+
+        let key = MonitorKey {
+            owner: owner.clone(),
+            monitor_ref,
+        };
+        let active = Arc::new(AtomicBool::new(true));
+        self.monitors
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(key.clone(), InstalledMonitor { active: active.clone() });
+
+        if let Some(reason) = handle.exit_reason() {
+            self.monitors
+                .write()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&key);
+            supervision_monitor::publish_down(
+                owner,
+                MonitorRef::from_raw(monitor_ref),
+                target,
+                &reason,
+            );
+            return Ok(());
+        }
+
+        let monitors = self.monitors.clone();
+        remote_spawn::spawn_async_on_runtime(async move {
+            let reason = handle.wait_exit_async().await;
+            let should_notify = monitors
+                .write()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&key)
+                .map(|entry| entry.active.load(Ordering::Acquire))
+                .unwrap_or(false);
+            if should_notify {
+                supervision_monitor::publish_down(
+                    owner,
+                    MonitorRef::from_raw(monitor_ref),
+                    target,
+                    &reason,
+                );
+            }
+        });
+        Ok(())
+    }
+
+    fn apply_demonitor(&self, owner: ActorAddress, target: ActorAddress, monitor_ref: u64) {
+        let _ = target;
+        let key = MonitorKey {
+            owner,
+            monitor_ref,
+        };
+        if let Some(entry) = self
+            .monitors
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&key)
+        {
+            entry.active.store(false, Ordering::Release);
+        }
+    }
+
+    fn apply_down(
+        &self,
+        owner: ActorAddress,
+        monitor_ref: u64,
+        reason: WireExitReason,
+    ) -> Result<(), TransportError> {
+        if owner.node != self.local {
+            return Err(TransportError::Protocol(format!(
+                "Down owner {} is not on this node ({})",
+                owner.node, self.local
+            )));
+        }
+        let send_down = self
+            .down_owners
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&owner.actor_id)
+            .cloned()
+            .ok_or_else(|| {
+                TransportError::Protocol(format!(
+                    "Down: unknown local owner actor {}",
+                    owner.actor_id
+                ))
+            })?;
+        let down = Down {
+            monitor_ref: MonitorRef::from_raw(monitor_ref),
+            reason: wire_to_exit_reason(reason),
+        };
+        send_down(down).map_err(|e| TransportError::Protocol(e.to_string()))
+    }
+
     fn apply_signal(
         &self,
         target: &ActorAddress,
@@ -259,6 +485,10 @@ impl SupervisionBrokerInner {
         };
 
         self.unregister(actor_id);
+        self.exited
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(actor_id, exit.reason.clone());
         super::supervision_sync::publish_supervision(child_exit_envelope(
             child,
             parent,
