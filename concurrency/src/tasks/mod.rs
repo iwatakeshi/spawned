@@ -1,4 +1,5 @@
 pub(crate) mod actor;
+mod child_spec;
 pub mod dynamic_supervisor;
 pub mod pg;
 mod stream;
@@ -16,7 +17,8 @@ pub use actor::{
     request, send_message_on, Actor, ActorRef, ActorStart, Backend, Context, Handler, Receiver,
     Recipient, DEFAULT_REQUEST_TIMEOUT,
 };
+pub use child_spec::ChildSpec;
 pub use dynamic_supervisor::{DynamicSupervisor, DynamicSupervisorApi, DynamicSupervisorBuilder};
 pub use stream::spawn_listener;
-pub use supervisor::{ChildSpec, Supervisor, SupervisorBuilder};
+pub use supervisor::{Supervisor, SupervisorBuilder};
 pub use time::{send_after, send_interval, TimerHandle};

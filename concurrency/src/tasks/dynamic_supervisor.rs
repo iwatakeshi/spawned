@@ -4,12 +4,10 @@ use std::time::Instant;
 
 use crate::child_handle::{ActorId, ChildHandle};
 use crate::child_spec::{
-    shutdown_child_async, warn_supervisor_timeout, ChildType, RestartBackoff, RestartIntensity,
-    RestartType, ShutdownType, DEFAULT_WORKER_SHUTDOWN,
+    shutdown_child_async, RestartBackoff, RestartIntensity, ShutdownType,
 };
 use crate::dynamic_supervisor::{instance_id, DynamicChildInfo, DynamicSupervisorError};
 use crate::link::Exit;
-use crate::mailbox::MailboxConfig;
 use crate::registry;
 use crate::response::Response;
 use crate::supervisor::{
@@ -18,91 +16,7 @@ use crate::supervisor::{
 
 use super::actor::{Actor, ActorRef, ActorStart, Context, Handler};
 
-type ChildStartFn =
-    Arc<dyn Fn(&Context<DynamicSupervisor>, MailboxConfig) -> ChildHandle + Send + Sync>;
-
-/// Specification for a dynamically started child in tasks mode.
-pub struct ChildSpec {
-    pub id: String,
-    start: ChildStartFn,
-    pub restart: RestartType,
-    pub shutdown: ShutdownType,
-    pub child_type: ChildType,
-    pub mailbox: MailboxConfig,
-    pub backoff: RestartBackoff,
-}
-
-impl Clone for ChildSpec {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id.clone(),
-            start: self.start.clone(),
-            restart: self.restart,
-            shutdown: self.shutdown,
-            child_type: self.child_type,
-            mailbox: self.mailbox,
-            backoff: self.backoff,
-        }
-    }
-}
-
-impl ChildSpec {
-    pub fn worker<A, F>(id: impl Into<String>, start: F, restart: RestartType) -> Self
-    where
-        A: ActorStart,
-        F: Fn() -> A + Send + Sync + 'static,
-    {
-        Self {
-            id: id.into(),
-            start: Arc::new(move |ctx, mailbox| {
-                start()
-                    .start_linked_with_mailbox(ctx, mailbox)
-                    .child_handle()
-            }),
-            restart,
-            shutdown: DEFAULT_WORKER_SHUTDOWN,
-            child_type: ChildType::Worker,
-            mailbox: MailboxConfig::default_worker(),
-            backoff: RestartBackoff::default(),
-        }
-    }
-
-    pub fn supervisor<A, F>(id: impl Into<String>, start: F, restart: RestartType) -> Self
-    where
-        A: ActorStart,
-        F: Fn() -> A + Send + Sync + 'static,
-    {
-        Self {
-            id: id.into(),
-            start: Arc::new(move |ctx, mailbox| {
-                start()
-                    .start_linked_with_mailbox(ctx, mailbox)
-                    .child_handle()
-            }),
-            restart,
-            shutdown: ShutdownType::Infinity,
-            child_type: ChildType::Supervisor,
-            mailbox: MailboxConfig::unbounded(),
-            backoff: RestartBackoff::default(),
-        }
-    }
-
-    pub fn with_shutdown(mut self, shutdown: ShutdownType) -> Self {
-        warn_supervisor_timeout(self.child_type, shutdown);
-        self.shutdown = shutdown;
-        self
-    }
-
-    pub fn with_mailbox(mut self, mailbox: MailboxConfig) -> Self {
-        self.mailbox = mailbox;
-        self
-    }
-
-    pub fn with_backoff(mut self, backoff: RestartBackoff) -> Self {
-        self.backoff = backoff;
-        self
-    }
-}
+pub use super::child_spec::ChildSpec;
 
 /// Builder for a [`DynamicSupervisor`] actor.
 pub struct DynamicSupervisorBuilder {
@@ -259,7 +173,7 @@ impl DynamicSupervisor {
         }
 
         let start_index = self.logic.next_start_index();
-        let handle = (spec.start)(ctx, spec.mailbox);
+        let handle = spec.start_child(&ctx.child_handle());
         self.logic.register_child(
             ChildPolicy {
                 id: child_id.clone(),
@@ -290,7 +204,7 @@ impl DynamicSupervisor {
         let Some(spec) = self.specs.get(child_id).cloned() else {
             return;
         };
-        let handle = (spec.start)(ctx, spec.mailbox);
+        let handle = spec.start_child(&ctx.child_handle());
         if let Some(old) = self.handles.get(child_id) {
             self.actor_to_id.remove(&old.id());
         }
@@ -471,6 +385,7 @@ impl Handler<WhichChildren> for DynamicSupervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::child_spec::RestartType;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 

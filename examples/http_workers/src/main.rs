@@ -9,7 +9,7 @@ use serde::Serialize;
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::message::Message;
 use spawned_concurrency::tasks::{
-    dynamic_supervisor::ChildSpec, pg, Actor, Context, DynamicSupervisor, DynamicSupervisorApi,
+    ChildSpec, pg, Actor, Context, DynamicSupervisor, DynamicSupervisorApi,
     Handler,
 };
 use spawned_concurrency::{Application, MailboxConfig, RestartType};

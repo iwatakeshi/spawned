@@ -1,4 +1,4 @@
-use crate::child_handle::ActorId;
+use crate::child_handle::{ActorId, ChildHandle};
 use crate::error::{ActorError, ExitReason};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -146,6 +146,46 @@ pub(crate) fn register_link(
                 signal: own_signal,
                 peer_links: own_links.clone(),
             });
+        }
+    }
+}
+
+/// Register a bidirectional link between two [`ChildHandle`]s.
+///
+/// Idempotent: linking the same pair twice is a no-op. If `target` is already
+/// dead, delivers the exit signal to `owner` when appropriate (same semantics
+/// as [`crate::tasks::actor::Context::link`]).
+pub fn link_handles(owner: &ChildHandle, target: &ChildHandle) {
+    let own_signal = make_signal(
+        owner.trap_exit_flag().clone(),
+        owner.cancel_fn().clone(),
+        owner.send_exit_fn().clone(),
+        owner.linked_reason().clone(),
+    );
+    let peer_signal = make_signal(
+        target.trap_exit_flag().clone(),
+        target.cancel_fn().clone(),
+        target.send_exit_fn().clone(),
+        target.linked_reason().clone(),
+    );
+    register_link(
+        owner.id(),
+        owner.links(),
+        own_signal,
+        target.id(),
+        target.links(),
+        peer_signal,
+    );
+
+    if let Some(reason) = target.exit_reason() {
+        if take_self_from_peer_table(owner.id(), target.links()) {
+            let signal = make_signal(
+                owner.trap_exit_flag().clone(),
+                owner.cancel_fn().clone(),
+                owner.send_exit_fn().clone(),
+                owner.linked_reason().clone(),
+            );
+            signal(target.id(), reason);
         }
     }
 }

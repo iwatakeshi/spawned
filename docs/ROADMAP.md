@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after Phase 9.4 (pg scopes + broadcast helpers).
+**Last updated:** after Phase 9.5 (unified ChildSpec).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -75,7 +75,7 @@ Closes [#132](https://github.com/lambdaclass/spawned/issues/132) and [#133](http
 | **Supervisor-as-child hot code upgrade** | No built-in code reload or child spec migration |
 | **Interruptible shutdown** | `kill()` does not preempt an in-flight handler or `stopped()`; escalation waits for the actor to return to its loop |
 | **Dynamic supervisor strategies** | `DynamicSupervisor` is **OneForOne only** (Erlang `simple_one_for_one`); no OneForAll / RestForOne at runtime |
-| **Unified `ChildSpec` type** | Static and dynamic supervisors use separate `ChildSpec` types (`tasks::ChildSpec` vs `tasks::dynamic_supervisor::ChildSpec`) |
+| **Unified `ChildSpec` type** | ✅ Shipped in Phase 9.5 — shared inner spec for static + dynamic supervisors |
 | **Supervised process groups** | No automatic pg membership when starting children; join groups explicitly in `started()` |
 
 ### Other Phase 3 work
@@ -227,9 +227,16 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 - Typed broadcast: `cast` / `call` (+ `_scoped` variants) returning `PgSendReport` / `PgCallReport`
 - `PgError::NotJoined` includes scope name
 
+### 9.5. Unified ChildSpec — shipped
+
+- Single `spawned_concurrency::child_spec::ChildSpec` inner type for static and dynamic supervisors
+- `tasks::ChildSpec` / `threads::ChildSpec` newtypes with `worker()` / `supervisor()` constructors (same API as before)
+- Handle-based child linking via `ChildHandle::link` and `ActorStart::start_linked_to_handle`
+- `dynamic_supervisor::ChildSpec` re-exports the runtime `ChildSpec` (backward compatible)
+
 | Phase | Focus |
 |-------|--------|
-| **9** | Remaining Kameo parity: pools, unified ChildSpec |
+| **9** | Remaining Kameo parity: pools, supervisor ↔ pg auto-join |
 | **10** | Federated registry, distributed pg, libp2p transport |
 
 ## Future Considerations

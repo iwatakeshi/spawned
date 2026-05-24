@@ -139,7 +139,7 @@ For homogeneous pools started at runtime:
 
 ```rust
 use spawned_concurrency::tasks::{
-    dynamic_supervisor::ChildSpec, DynamicSupervisor, DynamicSupervisorApi,
+    ChildSpec, DynamicSupervisor, DynamicSupervisorApi,
 };
 use spawned_concurrency::{RestartIntensity, RestartType};
 
@@ -174,7 +174,7 @@ let handle = sup
 | Item | Workaround |
 |------|------------|
 | **OneForAll / RestForOne** | Use static `Supervisor` for batch restart trees; dynamic supervisor is OneForOne only |
-| **Separate `ChildSpec` type** | Import from `dynamic_supervisor::ChildSpec`, not the static supervisor module |
+| **Separate `ChildSpec` type** | ✅ Unified in Phase 9.5 — use `tasks::ChildSpec` for static and dynamic supervisors |
 | **Auto pg membership** | Call `tasks::pg::join` or `threads::pg::join` in the child's `started()` if the pool should be discoverable |
 | **Backoff between restarts** | Sleep in `started()` or wrap restarts in application logic |
 

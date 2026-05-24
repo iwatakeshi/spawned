@@ -1,5 +1,7 @@
 use crate::child_handle::ChildHandle;
 use crate::error::ExitReason;
+use crate::mailbox::MailboxConfig;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// OTP default shutdown for worker children (5 seconds).
@@ -159,6 +161,57 @@ pub fn should_restart(restart: RestartType, reason: &ExitReason) -> bool {
         RestartType::Permanent => !matches!(reason, ExitReason::Shutdown),
         RestartType::Transient => reason.is_abnormal(),
         RestartType::Temporary => false,
+    }
+}
+
+/// Type-erased child start function (parent handle + mailbox → child handle).
+pub type ChildStartFn = Arc<dyn Fn(&ChildHandle, MailboxConfig) -> ChildHandle + Send + Sync>;
+
+/// Specification for a supervised child — shared by static and dynamic supervisors.
+pub struct ChildSpec {
+    pub id: String,
+    pub restart: RestartType,
+    pub shutdown: ShutdownType,
+    pub child_type: ChildType,
+    pub mailbox: MailboxConfig,
+    pub backoff: RestartBackoff,
+    pub(crate) start: ChildStartFn,
+}
+
+impl Clone for ChildSpec {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            start: self.start.clone(),
+            restart: self.restart,
+            shutdown: self.shutdown,
+            child_type: self.child_type,
+            mailbox: self.mailbox,
+            backoff: self.backoff,
+        }
+    }
+}
+
+impl ChildSpec {
+    /// Start a linked child under `parent` using this spec's mailbox policy.
+    pub(crate) fn start_child(&self, parent: &ChildHandle) -> ChildHandle {
+        (self.start)(parent, self.mailbox)
+    }
+
+    pub fn with_shutdown(mut self, shutdown: ShutdownType) -> Self {
+        warn_supervisor_timeout(self.child_type, shutdown);
+        self.shutdown = shutdown;
+        self
+    }
+
+    pub fn with_mailbox(mut self, mailbox: MailboxConfig) -> Self {
+        self.mailbox = mailbox;
+        self
+    }
+
+    pub fn with_backoff(mut self, backoff: RestartBackoff) -> Self {
+        self.backoff = backoff;
+        self
     }
 }
 

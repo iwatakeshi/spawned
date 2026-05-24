@@ -246,6 +246,11 @@ impl<A: Actor> Context<A> {
         }
     }
 
+    /// Get a type-erased `ChildHandle` for this actor.
+    pub fn child_handle(&self) -> ChildHandle {
+        self.actor_ref().child_handle()
+    }
+
     /// Set up a unidirectional monitor on another actor.
     ///
     /// Returns a [`MonitorRef`] that can be used to cancel the monitor via
@@ -330,41 +335,7 @@ impl<A: Actor> Context<A> {
     /// [`trap_exit(true)`]: Self::trap_exit
     /// [`Actor::exit_received`]: Actor::exit_received
     pub fn link(&self, target: &ChildHandle) {
-        let own_signal = link::make_signal(
-            self.trap_exit.clone(),
-            self.own_cancel_fn(),
-            self.own_send_exit_fn(),
-            self.linked_reason.clone(),
-        );
-        let peer_signal = link::make_signal(
-            target.trap_exit_flag().clone(),
-            target.cancel_fn().clone(),
-            target.send_exit_fn().clone(),
-            target.linked_reason().clone(),
-        );
-        link::register_link(
-            self.id,
-            &self.links,
-            own_signal,
-            target.id(),
-            target.links(),
-            peer_signal,
-        );
-
-        // If the target is already dead, we need to deliver the signal
-        // ourselves — but only if the target's own `propagate_exit` hasn't
-        // already done so. See the tasks-mode counterpart for the rationale.
-        if let Some(reason) = target.exit_reason() {
-            if link::take_self_from_peer_table(self.id, target.links()) {
-                let signal = link::make_signal(
-                    self.trap_exit.clone(),
-                    self.own_cancel_fn(),
-                    self.own_send_exit_fn(),
-                    self.linked_reason.clone(),
-                );
-                signal(target.id(), reason);
-            }
-        }
+        link::link_handles(&self.child_handle(), target);
     }
 
     /// Remove a previously-set bidirectional link.
@@ -851,6 +822,13 @@ pub trait ActorStart: Actor {
         ActorRef::spawn(self, mailbox)
     }
 
+    /// Start the actor with a mailbox configuration and link it to a parent handle.
+    fn start_linked_to_handle(self, parent: &ChildHandle, mailbox: MailboxConfig) -> ActorRef<Self> {
+        let actor_ref = self.start_with_mailbox(mailbox);
+        link::link_handles(parent, &actor_ref.child_handle());
+        actor_ref
+    }
+
     /// Start the actor and link it to the caller's context.
     ///
     /// The link is registered immediately after the actor is spawned. This is
@@ -868,9 +846,7 @@ pub trait ActorStart: Actor {
         parent_ctx: &Context<P>,
         mailbox: MailboxConfig,
     ) -> ActorRef<Self> {
-        let actor_ref = self.start_with_mailbox(mailbox);
-        parent_ctx.link(&actor_ref.child_handle());
-        actor_ref
+        self.start_linked_to_handle(&parent_ctx.child_handle(), mailbox)
     }
 }
 

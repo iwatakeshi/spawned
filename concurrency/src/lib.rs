@@ -56,9 +56,8 @@ pub use child_handle::{ActorId, ChildHandle};
 pub use spawned_address::{ActorAddress, Locality, NodeId, NodeName, local_node};
 pub use spawned_wire::{RemoteActor, RemoteMessage, WireEnvelope, WireError};
 pub use child_spec::{
-    should_restart, shutdown_child_async, shutdown_child_blocking, ChildType, RestartBackoff,
-    RestartIntensity,
-    RestartType, ShutdownType, DEFAULT_WORKER_SHUTDOWN,
+    should_restart, shutdown_child_async, shutdown_child_blocking, ChildSpec, ChildType,
+    RestartBackoff, RestartIntensity, RestartType, ShutdownType, DEFAULT_WORKER_SHUTDOWN,
 };
 pub use dynamic_supervisor::{DynamicChildInfo, DynamicSupervisorError};
 pub use error::{ActorError, ExitReason};

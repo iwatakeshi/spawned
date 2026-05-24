@@ -4,106 +4,20 @@ use std::time::{Duration, Instant};
 
 use crate::child_handle::ChildHandle;
 use crate::child_spec::{
-    shutdown_child_blocking, warn_supervisor_timeout, ChildType, RestartBackoff, RestartIntensity,
-    RestartType, ShutdownType, DEFAULT_WORKER_SHUTDOWN,
+    shutdown_child_blocking, ChildSpec as InnerChildSpec, RestartBackoff, RestartIntensity,
+    ShutdownType,
 };
 use crate::link::Exit;
-use crate::mailbox::MailboxConfig;
 use crate::supervisor::{
     ChildHandleSlot, ChildPolicy, SupervisorAction, SupervisorLogic, SupervisorStrategy,
 };
 
 use super::actor::{Actor, ActorRef, ActorStart, Context};
 
-type ChildStartFn = Arc<dyn Fn(&Context<Supervisor>, MailboxConfig) -> ChildHandle + Send + Sync>;
-
-/// Specification for a supervised child in threads mode.
-pub struct ChildSpec {
-    pub id: String,
-    start: ChildStartFn,
-    pub restart: RestartType,
-    pub shutdown: ShutdownType,
-    pub child_type: ChildType,
-    pub mailbox: MailboxConfig,
-    pub backoff: RestartBackoff,
-}
-
-impl Clone for ChildSpec {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id.clone(),
-            start: self.start.clone(),
-            restart: self.restart,
-            shutdown: self.shutdown,
-            child_type: self.child_type,
-            mailbox: self.mailbox,
-            backoff: self.backoff,
-        }
-    }
-}
-
-impl ChildSpec {
-    pub fn worker<A, F>(id: impl Into<String>, start: F, restart: RestartType) -> Self
-    where
-        A: ActorStart,
-        F: Fn() -> A + Send + Sync + 'static,
-    {
-        Self {
-            id: id.into(),
-            start: Arc::new(move |ctx, mailbox| {
-                start()
-                    .start_linked_with_mailbox(ctx, mailbox)
-                    .child_handle()
-            }),
-            restart,
-            shutdown: DEFAULT_WORKER_SHUTDOWN,
-            child_type: ChildType::Worker,
-            mailbox: MailboxConfig::default_worker(),
-            backoff: RestartBackoff::default(),
-        }
-    }
-
-    pub fn supervisor<A, F>(id: impl Into<String>, start: F, restart: RestartType) -> Self
-    where
-        A: ActorStart,
-        F: Fn() -> A + Send + Sync + 'static,
-    {
-        Self {
-            id: id.into(),
-            start: Arc::new(move |ctx, mailbox| {
-                start()
-                    .start_linked_with_mailbox(ctx, mailbox)
-                    .child_handle()
-            }),
-            restart,
-            shutdown: ShutdownType::Infinity,
-            child_type: ChildType::Supervisor,
-            mailbox: MailboxConfig::unbounded(),
-            backoff: RestartBackoff::default(),
-        }
-    }
-
-    pub fn with_shutdown(mut self, shutdown: ShutdownType) -> Self {
-        warn_supervisor_timeout(self.child_type, shutdown);
-        self.shutdown = shutdown;
-        self
-    }
-
-    pub fn with_mailbox(mut self, mailbox: MailboxConfig) -> Self {
-        self.mailbox = mailbox;
-        self
-    }
-
-    pub fn with_backoff(mut self, backoff: RestartBackoff) -> Self {
-        self.backoff = backoff;
-        self
-    }
-}
-
 pub struct SupervisorBuilder {
     strategy: SupervisorStrategy,
     intensity: RestartIntensity,
-    specs: Vec<ChildSpec>,
+    specs: Vec<InnerChildSpec>,
 }
 
 impl SupervisorBuilder {
@@ -125,8 +39,8 @@ impl SupervisorBuilder {
         self
     }
 
-    pub fn child(mut self, spec: ChildSpec) -> Self {
-        self.specs.push(spec);
+    pub fn child(mut self, spec: impl Into<InnerChildSpec>) -> Self {
+        self.specs.push(spec.into());
         self
     }
 
@@ -148,7 +62,7 @@ impl Default for SupervisorBuilder {
 
 pub struct Supervisor {
     logic: SupervisorLogic,
-    specs: Vec<ChildSpec>,
+    specs: Vec<InnerChildSpec>,
     handles: HashMap<String, ChildHandle>,
 }
 
@@ -157,8 +71,8 @@ impl Supervisor {
         SupervisorBuilder::new()
     }
 
-    fn start_child(&mut self, ctx: &Context<Self>, spec: &ChildSpec, start_index: usize) {
-        let handle = (spec.start)(ctx, spec.mailbox);
+    fn start_child(&mut self, ctx: &Context<Self>, spec: &InnerChildSpec, start_index: usize) {
+        let handle = spec.start_child(&ctx.child_handle());
         self.logic.register_child(
             ChildPolicy {
                 id: spec.id.clone(),
@@ -177,7 +91,7 @@ impl Supervisor {
         let Some(spec) = self.specs.iter().find(|spec| spec.id == child_id) else {
             return;
         };
-        let handle = (spec.start)(ctx, spec.mailbox);
+        let handle = spec.start_child(&ctx.child_handle());
         self.logic.replace_child_handle(
             child_id,
             ChildHandleSlot {
@@ -293,9 +207,11 @@ impl Actor for Supervisor {
 mod tests {
     use super::*;
     use crate::child_handle::ActorId;
+    use crate::child_spec::RestartType;
     use crate::error::ExitReason;
     use crate::message::Message;
     use crate::threads::actor::Handler;
+    use crate::threads::child_spec::ChildSpec;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::thread;

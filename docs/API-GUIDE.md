@@ -597,7 +597,7 @@ let child = Worker::new().start_linked(&ctx);
 
 Built-in Erlang-style supervision. See the [Supervision Guide](SUPERVISION.md) for patterns and pitfalls; this section is the API reference.
 
-Shared policy types live in the crate root; `ChildSpec` and `Supervisor` are mode-specific (`tasks::` or `threads::`).
+Shared policy types and the unified [`ChildSpec`](child_spec.rs) live in the crate root. Import `tasks::ChildSpec` or `threads::ChildSpec` for `worker()` / `supervisor()` constructors — the same type works for static and dynamic supervisors.
 
 ### Shared types
 
@@ -697,7 +697,8 @@ Use when the child set is not known at build time (connection handlers, job work
 
 ```rust
 use spawned_concurrency::tasks::{
-    dynamic_supervisor::ChildSpec, DynamicSupervisor, DynamicSupervisorApi,
+    dynamic_supervisor::DynamicSupervisor, dynamic_supervisor::DynamicSupervisorApi,
+    ChildSpec,
 };
 use spawned_concurrency::{RestartIntensity, RestartType};
 
@@ -737,7 +738,6 @@ See [`dynamic_workers`](../examples/dynamic_workers).
 | Item | Notes |
 |------|-------|
 | **Restart strategies** | OneForOne only; no OneForAll / RestForOne for runtime pools |
-| **Unified ChildSpec** | Uses `dynamic_supervisor::ChildSpec`, separate from static supervisor's `ChildSpec` |
 | **Backoff** | Immediate restart on crash; no exponential delay |
 | **Process group integration** | Children are not auto-joined to pg; call `pg::join` in `started()` |
 

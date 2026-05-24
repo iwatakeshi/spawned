@@ -131,6 +131,16 @@ impl ChildHandle {
         crate::shutdown_signal::register_shutdown_signal(self.send_signal.clone())
     }
 
+    /// Set up a bidirectional link with another actor (see [`crate::link::link_handles`]).
+    pub fn link(&self, target: &ChildHandle) {
+        crate::link::link_handles(self, target);
+    }
+
+    /// Remove a previously-set bidirectional link.
+    pub fn unlink(&self, target: &ChildHandle) {
+        crate::link::unregister_link(self.id, &self.links, target.id(), target.links());
+    }
+
     /// Crate-internal accessors used by `ctx.link()` to wire up signal propagation.
     pub(crate) fn trap_exit_flag(&self) -> &TrapExitFlag {
         &self.trap_exit
