@@ -6,6 +6,8 @@ Rust actor framework inspired by Erlang OTP. Provides `Actor` trait (similar to 
 
 ```
 spawned/
+├── address/         # NodeId, ActorAddress (spawned-address)
+├── wire/            # WireEnvelope, RemoteMessage traits (spawned-wire)
 ├── concurrency/     # Main library: Actor trait, timers, streams
 │   └── src/
 │       ├── tasks/   # Async version (requires tokio runtime)
@@ -36,6 +38,17 @@ Both provide identical Actor API. The `tasks` module has `Backend` enum: `Async`
 | `Recipient<M>` | Type-erased per-message reference (`Arc<dyn Receiver<M>>`) |
 | `CancellationToken` | Signal cancellation to timers/actors |
 | `TimerHandle` | Handle for `send_after`/`send_interval` |
+| `ActorAddress` | `{ node, actor_id }` — cluster-ready identity |
+| `RemoteMessage` | Trait for wire-serializable message types |
+
+## Clustering checklist (feature PRs)
+
+When Kameo and OTP conflict, **prefer OTP**. Before merging features that touch handles, registry, or pg:
+
+1. Use `ActorAddress` (not bare local id) for group/lookup keys
+2. Cross-node messages implement `RemoteMessage`; keep `Exit`/stop/signals local
+3. Supervision stays local-first until remote supervision is designed
+4. See [docs/CLUSTERING.md](docs/CLUSTERING.md)
 
 ## Actor Lifecycle
 
@@ -67,8 +80,10 @@ actor.join().await;
 ## Testing
 
 ```bash
-cargo test --workspace           # Run all tests
-cargo test -p spawned-concurrency  # Test concurrency crate only
+cargo test --workspace              # Run all tests
+cargo test -p spawned-address       # Address types
+cargo test -p spawned-wire          # Wire codec
+cargo test -p spawned-concurrency   # Concurrency crate only
 ```
 
 ## Conventions

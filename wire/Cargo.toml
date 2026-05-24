@@ -1,0 +1,16 @@
+[package]
+name = "spawned-wire"
+description = "Wire envelope and remote message traits for Spawned clustering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+postcard = { version = "1", features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
+spawned-address = { workspace = true }
+thiserror = "2.0.12"
+
+[dev-dependencies]
+serde_json = "1"

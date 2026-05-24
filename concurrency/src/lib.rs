@@ -48,6 +48,8 @@ pub mod tasks;
 pub mod threads;
 
 pub use child_handle::{ActorId, ChildHandle};
+pub use spawned_address::{ActorAddress, Locality, NodeId, NodeName, local_node};
+pub use spawned_wire::{RemoteActor, RemoteMessage, WireEnvelope, WireError};
 pub use child_spec::{
     should_restart, shutdown_child_async, shutdown_child_blocking, ChildType, RestartIntensity,
     RestartType, ShutdownType, DEFAULT_WORKER_SHUTDOWN,
@@ -63,6 +65,40 @@ pub use shutdown_signal::{
     register_shutdown_on_signal, spawn_shutdown_signal_dispatcher_tasks,
     spawn_shutdown_signal_dispatcher_threads, SignalGuard,
 };
-pub use spawned_macros::{actor, protocol};
+pub use spawned_macros::{actor, protocol, remote_actor, remote_message};
 pub use spawned_rt::OsSignal;
 pub use supervisor::SupervisorStrategy;
+
+#[cfg(test)]
+mod remote_macro_tests {
+    use super::{RemoteActor, RemoteMessage};
+    use crate::{remote_actor, remote_message};
+    use serde::{Deserialize, Serialize};
+
+    #[remote_actor]
+    struct DemoActor;
+
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    #[remote_message]
+    struct DemoMsg {
+        x: u32,
+    }
+
+    #[test]
+    fn remote_macro_generates_stable_ids() {
+        assert_eq!(DemoActor::REMOTE_ID, "spawned.DemoActor/v1");
+        assert_eq!(DemoMsg::REMOTE_ID, "spawned.DemoMsg/v1");
+    }
+
+    #[test]
+    fn remote_message_roundtrips_via_wire() {
+        use crate::WireEnvelope;
+        let envelope = WireEnvelope::fire_and_forget(
+            spawned_address::ActorAddress::local(spawned_address::ActorId::from_raw(1)),
+            &DemoMsg { x: 7 },
+        )
+        .unwrap();
+        let msg: DemoMsg = spawned_wire::decode_payload(&envelope).unwrap();
+        assert_eq!(msg, DemoMsg { x: 7 });
+    }
+}

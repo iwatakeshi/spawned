@@ -1160,3 +1160,45 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     output.into()
 }
+
+fn remote_id_from_type(name: &str) -> String {
+    format!("spawned.{name}/v1")
+}
+
+/// Mark an actor type as remotely addressable with a stable wire id.
+#[proc_macro_attribute]
+pub fn remote_actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as syn::ItemStruct);
+    let name = input.ident.to_string();
+    let remote_id = remote_id_from_type(&name);
+    let ident = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    quote! {
+        #input
+
+        impl #impl_generics spawned_wire::RemoteActor for #ident #ty_generics #where_clause {
+            const REMOTE_ID: &'static str = #remote_id;
+        }
+    }
+    .into()
+}
+
+/// Mark a message type as serializable on the wire with a stable id.
+#[proc_macro_attribute]
+pub fn remote_message(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as syn::ItemStruct);
+    let name = input.ident.to_string();
+    let remote_id = remote_id_from_type(&name);
+    let ident = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    quote! {
+        #input
+
+        impl #impl_generics spawned_wire::RemoteMessage for #ident #ty_generics #where_clause {
+            const REMOTE_ID: &'static str = #remote_id;
+        }
+    }
+    .into()
+}

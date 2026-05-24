@@ -3,32 +3,14 @@ use crate::exit_request::RequestedExitReason;
 use crate::link::{LinkTable, LinkedExitReason, SendExitFn, TrapExitFlag};
 use crate::shutdown_signal::SignalGuard;
 use spawned_rt::OsSignal;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+pub use spawned_address::ActorId;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
-// ActorId
+// ActorId — re-exported from spawned-address (see spawned_address::ActorId)
 // ---------------------------------------------------------------------------
-
-static NEXT_ACTOR_ID: AtomicU64 = AtomicU64::new(1);
-
-/// Unique identity for an actor instance. Used by monitors and links to
-/// identify actors without needing the concrete actor type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ActorId(u64);
-
-impl ActorId {
-    pub(crate) fn next() -> Self {
-        Self(NEXT_ACTOR_ID.fetch_add(1, Ordering::Relaxed))
-    }
-}
-
-impl std::fmt::Display for ActorId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ActorId({})", self.0)
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Completion — abstraction over tasks/threads completion signals

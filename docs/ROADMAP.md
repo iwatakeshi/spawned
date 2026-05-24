@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after signal priority shutdown (Phase 7).
+**Last updated:** after clustering foundations (Phase 8a).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -173,6 +173,31 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 | **Dropping / sliding buffers** | Only fixed capacity with fail-fast or block |
 | **Configurable FIFO mode** | `MailboxConfig::fifo()` to disable system priority |
 
+## Phase 8: Clustering foundations — in progress
+
+**North star:** OTP over Kameo — see [CLUSTERING.md](CLUSTERING.md).
+
+### 8a. Address + wire format — in progress
+
+**Shipped / in flight:**
+
+- **`spawned-address`** — `NodeId`, `ActorAddress`, `ActorId`, `local_node()` (`SPAWNED_NODE_NAME`)
+- **`spawned-wire`** — `WireEnvelope`, `RemoteActor`, `RemoteMessage`, postcard codec
+- **`#[remote_actor]` / `#[remote_message]`** macros with stable `spawned.{Type}/v1` ids
+- **pg internal keys** — `ActorAddress` (local node + actor id); public API unchanged
+
+**Non-goals (8a):** network transport, remote send, distributed registry
+
+### 8b–10 (planned)
+
+| Phase | Focus |
+|-------|--------|
+| **8b** | `ClusterRouter`, `RemoteActorRef`, registry address integration |
+| **8c** | Pluggable transport, TCP MVP, two-node integration test |
+| **8d** | `Node` / `Application` bootstrap (Kameo `bootstrap` parity, OTP-shaped) |
+| **9** | Cluster-safe Kameo parity: backoff, pg scopes, pools, unified ChildSpec |
+| **10** | Federated registry, distributed pg, libp2p transport |
+
 ## Future Considerations
 
 | Feature | Notes |
@@ -183,7 +208,7 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 | State machines (`gen_statem`) | Protocol implementations |
 | Backoff strategies | Built into supervision |
 | Persistence / event sourcing | Akka Persistence pattern |
-| Clustering / distribution | `ractor_cluster` equivalent |
+| Clustering / distribution | Phase 8 in progress — see [CLUSTERING.md](CLUSTERING.md) |
 | Built-in observability | Message latency (mailbox depth shipped in 6c) |
 | Custom runtime | Purpose-built actor runtime |
 

@@ -7,6 +7,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+spawned-address = { workspace = true }
+spawned-wire = { workspace = true }
 spawned-rt = { workspace = true }
 spawned-macros = { workspace = true }
 tracing = { workspace = true }
@@ -15,6 +17,7 @@ thiserror = "2.0.12"
 pin-project-lite = "0.2"
 
 [dev-dependencies]
+serde = { version = "1", features = ["derive"] }
 # This tokio imports are only used in tests, we should not use them in the library code.
 tokio-stream = { version = "0.1.17" }
 tokio = { version = "1", features = ["full"] }

@@ -6,10 +6,14 @@
 //!
 //! Actors are automatically removed from all groups when they exit.
 //!
+//! Internal member keys use [`ActorAddress`] (local node + [`ActorId`]) so the
+//! store is cluster-ready; public APIs still accept [`ActorId`] on this node.
+//!
 //! For typed dispatch (sending messages to group members), use [`crate::tasks::pg`]
 //! or [`crate::threads::pg`] depending on your runtime.
 
 use crate::child_handle::{ActorId, ChildHandle};
+use spawned_address::ActorAddress;
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 use std::sync::{OnceLock, RwLock};
@@ -28,13 +32,22 @@ struct Member {
 }
 
 struct PgStore {
-    groups: HashMap<String, HashMap<ActorId, Member>>,
-    index: HashMap<ActorId, HashSet<String>>,
+    groups: HashMap<String, HashMap<ActorAddress, Member>>,
+    index: HashMap<ActorAddress, HashSet<String>>,
     typed: HashMap<(String, TypeId), Box<dyn TypedBucket + Send + Sync>>,
 }
 
+fn local_address(id: ActorId) -> ActorAddress {
+    ActorAddress::local(id)
+}
+
 impl PgStore {
-    fn typed_join<T: Clone + Send + Sync + 'static>(&mut self, group: &str, id: ActorId, value: T) {
+    fn typed_join<T: Clone + Send + Sync + 'static>(
+        &mut self,
+        group: &str,
+        address: ActorAddress,
+        value: T,
+    ) {
         let key = (group.to_string(), TypeId::of::<T>());
         let bucket = self
             .typed
@@ -44,7 +57,7 @@ impl PgStore {
             .as_any_mut()
             .downcast_mut::<TypedMembers<T>>()
             .expect("typed pg bucket type mismatch")
-            .insert(id, value);
+            .insert(address, value);
     }
 
     fn typed_members<T: Clone + Send + Sync + 'static>(&self, group: &str) -> Vec<T> {
@@ -60,11 +73,11 @@ impl PgStore {
             .unwrap_or_default()
     }
 
-    fn remove_actor(&mut self, id: ActorId) {
-        if let Some(groups) = self.index.remove(&id) {
+    fn remove_actor(&mut self, address: ActorAddress) {
+        if let Some(groups) = self.index.remove(&address) {
             for group in groups {
                 if let Some(members) = self.groups.get_mut(&group) {
-                    members.remove(&id);
+                    members.remove(&address);
                     if members.is_empty() {
                         self.groups.remove(&group);
                     }
@@ -72,7 +85,7 @@ impl PgStore {
             }
         }
         for bucket in self.typed.values_mut() {
-            bucket.remove(id);
+            bucket.remove(&address);
         }
         self.typed.retain(|_, bucket| !bucket.is_empty());
     }
@@ -92,12 +105,12 @@ fn store() -> &'static RwLock<PgStore> {
 trait TypedBucket: Any + Send + Sync {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
-    fn remove(&mut self, id: ActorId);
+    fn remove(&mut self, address: &ActorAddress);
     fn is_empty(&self) -> bool;
 }
 
 struct TypedMembers<T> {
-    members: HashMap<ActorId, T>,
+    members: HashMap<ActorAddress, T>,
 }
 
 impl<T> Default for TypedMembers<T> {
@@ -109,8 +122,8 @@ impl<T> Default for TypedMembers<T> {
 }
 
 impl<T: Clone + Send + Sync + 'static> TypedMembers<T> {
-    fn insert(&mut self, id: ActorId, value: T) {
-        self.members.insert(id, value);
+    fn insert(&mut self, address: ActorAddress, value: T) {
+        self.members.insert(address, value);
     }
 
     fn values(&self) -> Vec<T> {
@@ -127,8 +140,8 @@ impl<T: Clone + Send + Sync + 'static> TypedBucket for TypedMembers<T> {
         self
     }
 
-    fn remove(&mut self, id: ActorId) {
-        self.members.remove(&id);
+    fn remove(&mut self, address: &ActorAddress) {
+        self.members.remove(address);
     }
 
     fn is_empty(&self) -> bool {
@@ -142,46 +155,47 @@ impl<T: Clone + Send + Sync + 'static> TypedBucket for TypedMembers<T> {
 /// created automatically on first join.
 pub fn join(group: impl AsRef<str>, handle: ChildHandle) {
     let group = group.as_ref().to_string();
-    let id = handle.id();
+    let address = local_address(handle.id());
     let mut store = store().write().unwrap_or_else(|p| p.into_inner());
 
     let members = store.groups.entry(group.clone()).or_default();
     members
-        .entry(id)
+        .entry(address.clone())
         .and_modify(|member| member.joins += 1)
         .or_insert(Member { handle, joins: 1 });
 
-    store.index.entry(id).or_default().insert(group);
+    store.index.entry(address).or_default().insert(group);
 }
 
 /// Leave a group once (decrement join count).
 pub fn leave(group: impl AsRef<str>, id: ActorId) -> Result<(), PgError> {
     let group = group.as_ref();
+    let address = local_address(id);
     let mut store = store().write().unwrap_or_else(|p| p.into_inner());
 
     let Some(members) = store.groups.get_mut(group) else {
         return Err(PgError::NotJoined(id, group.to_string()));
     };
 
-    let Some(member) = members.get_mut(&id) else {
+    let Some(member) = members.get_mut(&address) else {
         return Err(PgError::NotJoined(id, group.to_string()));
     };
 
     member.joins -= 1;
     if member.joins == 0 {
-        members.remove(&id);
+        members.remove(&address);
         if members.is_empty() {
             store.groups.remove(group);
         }
-        if let Some(groups) = store.index.get_mut(&id) {
+        if let Some(groups) = store.index.get_mut(&address) {
             groups.remove(group);
             if groups.is_empty() {
-                store.index.remove(&id);
+                store.index.remove(&address);
             }
         }
         for (key, bucket) in store.typed.iter_mut() {
             if key.0 == group {
-                bucket.remove(id);
+                bucket.remove(&address);
             }
         }
         store.typed.retain(|_, bucket| !bucket.is_empty());
@@ -248,7 +262,7 @@ pub(crate) fn typed_join<T: Clone + Send + Sync + 'static>(
     store()
         .write()
         .unwrap_or_else(|p| p.into_inner())
-        .typed_join(group.as_ref(), id, value);
+        .typed_join(group.as_ref(), local_address(id), value);
 }
 
 pub(crate) fn typed_members<T: Clone + Send + Sync + 'static>(group: impl AsRef<str>) -> Vec<T> {
@@ -263,7 +277,7 @@ pub(crate) fn remove_actor(id: ActorId) {
     store()
         .write()
         .unwrap_or_else(|p| p.into_inner())
-        .remove_actor(id);
+        .remove_actor(local_address(id));
 }
 
 #[cfg(test)]
@@ -271,6 +285,7 @@ mod tests {
     use super::*;
     use crate::exit_request::{new_requested_exit_reason, new_skip_stopped_flag};
     use crate::link::{new_link_table, new_linked_exit_reason, new_trap_exit_flag};
+    use spawned_address::ActorAddress;
     use std::sync::Arc;
     use std::sync::{Condvar, Mutex};
 
@@ -369,5 +384,18 @@ mod tests {
         let groups = which_groups();
         assert!(groups.contains(&g1));
         assert!(groups.contains(&g2));
+    }
+
+    #[test]
+    fn member_key_matches_local_address() {
+        let group = unique_group("pg_addr");
+        let handle = dummy_handle();
+        let id = handle.id();
+        join(&group, handle);
+
+        let store = store().read().unwrap_or_else(|p| p.into_inner());
+        let addr = ActorAddress::local(id);
+        assert_eq!(addr, local_address(id));
+        assert!(store.groups.get(&group).unwrap().contains_key(&addr));
     }
 }

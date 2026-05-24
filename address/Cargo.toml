@@ -1,0 +1,17 @@
+[package]
+name = "spawned-address"
+description = "Node and actor addressing for Spawned clustering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]
+
+[dev-dependencies]
+serde_json = "1"
