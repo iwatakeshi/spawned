@@ -52,7 +52,9 @@ Workers default to `Timeout(5s)` via `DEFAULT_WORKER_SHUTDOWN`. Use `.with_shutd
 
 **Escalation caveat:** `kill()` sets `skip_stopped` but does not interrupt an in-flight message handler or `stopped()` callback. The supervisor keeps waiting until the actor returns to its message loop.
 
-For load-sensitive workers, `ChildSpec::worker()` defaults to a bounded fail-fast mailbox (`MailboxConfig::default_worker()`, capacity 64). Override with `.with_mailbox(...)` — e.g. `.with_mailbox(MailboxConfig::unbounded())` or a custom capacity. Restarts inherit the spec's mailbox config.
+For load-sensitive workers, `ChildSpec::worker()` defaults to a bounded fail-fast mailbox (`MailboxConfig::default_worker()`, capacity 64). Override with `.with_mailbox(...)`. Restarts inherit the spec's mailbox config.
+
+Process groups support Erlang-style **scopes** (overlay networks). Unscoped APIs use the `"default"` scope. Broadcast with `pg::cast` / `pg::call` instead of manual iteration when messages are `Clone`.
 
 **Exit delivery priority:** Link-propagated `Exit` messages bypass user mailbox backpressure (Phase 6b) and are dequeued before queued user messages. Stop/cancellation beats supervision exits when both are queued. OS signals (Ctrl+C / SIGTERM) use the highest-priority channel (Phase 7). Supervisors with `trap_exit(true)` see child deaths promptly even under load.
 

@@ -421,11 +421,16 @@ use spawned_concurrency::tasks::pg as tasks_pg; // async ActorRef dispatch
 
 | Function | Description |
 |----------|-------------|
-| `pg::join(group, handle)` | Join a `ChildHandle` (refcounted) |
+| `pg::join(group, handle)` | Join a `ChildHandle` in the default scope (refcounted) |
+| `pg::join_scoped(scope, group, handle)` | Join in an overlay-network scope |
 | `pg::leave(group, id)` | Leave once; returns `PgError::NotJoined` if absent |
-| `pg::get_members(group)` | All live members as `ChildHandle` |
+| `pg::leave_scoped(scope, group, id)` | Leave a scoped group once |
+| `pg::get_members(group)` | All live members as `ChildHandle` (default scope) |
+| `pg::get_members_scoped(scope, group)` | All live members in a scope |
 | `pg::get_local_members(group)` | Same as `get_members` on a single node |
-| `pg::which_groups()` | Names of non-empty groups |
+| `pg::which_groups()` | Names of non-empty groups in the default scope |
+| `pg::which_groups_scoped(scope)` | Names of non-empty groups in a scope |
+| `pg::which_scopes()` | Names of scopes with at least one group |
 
 ### Typed dispatch (`tasks::pg` or `threads::pg`)
 
@@ -433,10 +438,17 @@ Same functions in both modules; only the underlying `ActorRef` mode differs.
 
 | Function | Description |
 |----------|-------------|
-| `pg::join(group, &actor_ref)` | Join for later message dispatch |
+| `pg::join(group, &actor_ref)` | Join for later message dispatch (default scope) |
+| `pg::join_scoped(scope, group, &actor_ref)` | Join in a scope |
 | `pg::leave(group, id)` | Decrement membership |
-| `pg::members::<A>(group)` | Live `ActorRef<A>` members |
+| `pg::leave_scoped(scope, group, id)` | Decrement scoped membership |
+| `pg::members::<A>(group)` | Live `ActorRef<A>` members (default scope) |
+| `pg::members_scoped::<A>(scope, group)` | Live members in a scope |
 | `pg::local_members::<A>(group)` | Same as `members` on a single node |
+| `pg::cast::<A, M>(group, msg)` | Fire-and-forget broadcast; returns `PgSendReport` |
+| `pg::cast_scoped::<A, M>(scope, group, msg)` | Scoped broadcast |
+| `pg::call::<A, M>(group, msg)` | Request/reply broadcast; returns `PgCallReport` (async in tasks, blocking in threads) |
+| `pg::call_scoped::<A, M>(scope, group, msg)` | Scoped request/reply broadcast |
 
 ### Example (tasks mode)
 
@@ -457,9 +469,14 @@ impl Handler<Ping> for Worker {
     async fn handle(&mut self, _msg: Ping, _ctx: &Context<Self>) { /* ... */ }
 }
 
-// Broadcast
-for w in pg::members::<Worker>("pool") {
-    w.send(Ping)?;
+// Broadcast (requires M: Clone)
+let report = pg::cast::<Worker, _>("pool", Ping);
+assert_eq!(report.delivered, pg::members::<Worker>("pool").len());
+
+// Request/reply broadcast
+let replies = pg::call::<Worker, _>("pool", GetCount).await;
+for (id, count) in replies.ok {
+    println!("worker {id}: {count}");
 }
 ```
 
@@ -479,9 +496,8 @@ impl Handler<Ping> for Worker {
     fn handle(&mut self, _msg: Ping, _ctx: &Context<Self>) { /* ... */ }
 }
 
-for w in pg::members::<Worker>("pool") {
-    w.send(Ping)?;
-}
+let report = pg::cast::<Worker, _>("pool", Ping);
+assert_eq!(report.delivered, pg::members::<Worker>("pool").len());
 ```
 
 Actors are **automatically removed** from all groups when they exit. `DynamicSupervisor` optional registry names are separate from pg — join explicitly if needed.
@@ -498,10 +514,8 @@ Run: `cargo test -p spawned-concurrency --test pg_integration`
 
 | Item | Notes |
 |------|-------|
-| **Scopes** | Erlang overlay-network scopes; only a default scope today |
 | **Group monitors** | No notifications when membership changes |
 | **Distributed pg** | Cross-node membership requires clustering (not started) |
-| **Built-in broadcast/call** | No framework-level `pg_cast`; iterate `members()` yourself |
 | **Supervisor auto-join** | Starting a child does not add it to a process group |
 
 ---

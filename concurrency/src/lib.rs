@@ -65,7 +65,7 @@ pub use error::{ActorError, ExitReason};
 pub use link::Exit;
 pub use mailbox::{BackpressureMode, MailboxConfig};
 pub use monitor::{Down, MonitorRef};
-pub use pg::PgError;
+pub use pg::{PgCallReport, PgError, PgSendReport, DEFAULT_SCOPE};
 pub use response::Response;
 pub use shutdown_signal::{
     register_shutdown_on_signal, spawn_shutdown_signal_dispatcher_tasks,

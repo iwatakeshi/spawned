@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 const GROUP: &str = "workers";
 
+#[derive(Clone, Copy)]
 struct Ping;
 
 impl Message for Ping {
@@ -37,9 +38,8 @@ impl Handler<Ping> for Worker {
 }
 
 fn broadcast_ping() {
-    for worker in pg::members::<Worker>(GROUP) {
-        worker.send(Ping).expect("send ping");
-    }
+    let report = pg::cast::<Worker, _>(GROUP, Ping);
+    assert_eq!(report.failed.len(), 0);
 }
 
 fn main() {

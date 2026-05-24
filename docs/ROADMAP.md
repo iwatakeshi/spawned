@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after Phase 9.3 (default worker mailbox).
+**Last updated:** after Phase 9.4 (pg scopes + broadcast helpers).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -99,10 +99,8 @@ Erlang/Ractor-style named actor sets for broadcast and dispatch on a **single no
 
 | Item | Notes |
 |------|-------|
-| **Scopes** | Erlang `pg` overlay networks (`join(scope, group, pid)`); only a default scope exists today |
 | **Group monitors** | No `monitor` / `demonitor` for membership change notifications (Ractor-style) |
 | **Distributed pg** | No cross-node membership; `get_local_members` is identical to `get_members` on one node |
-| **Built-in broadcast/call** | No `pg_cast` / `pg_call` helpers; iterate `members()` and send yourself |
 | **Supervisor integration** | Dynamic/static supervisors do not auto-join children to groups |
 
 ## Phase 5: Documentation & Polish — ongoing
@@ -222,16 +220,23 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 - `ChildSpec::worker()` defaults to `MailboxConfig::default_worker()` (capacity 64, fail-fast)
 - Nested supervisors remain unbounded; override with `.with_mailbox(...)` or `.with_mailbox(MailboxConfig::unbounded())`
 
+### 9.4. pg scopes + broadcast helpers — shipped
+
+- Scoped membership: `join_scoped` / `leave_scoped` / `members_scoped` / `which_groups_scoped` / `which_scopes`
+- Default scope `"default"` preserves backward-compatible unscoped APIs
+- Typed broadcast: `cast` / `call` (+ `_scoped` variants) returning `PgSendReport` / `PgCallReport`
+- `PgError::NotJoined` includes scope name
+
 | Phase | Focus |
 |-------|--------|
-| **9** | Remaining Kameo parity: pg scopes, pools, unified ChildSpec |
+| **9** | Remaining Kameo parity: pools, unified ChildSpec |
 | **10** | Federated registry, distributed pg, libp2p transport |
 
 ## Future Considerations
 
 | Feature | Notes |
 |---------|-------|
-| pg scopes and group monitors | Deferred from local pg MVP (see above) |
+| pg scopes and group monitors | Scopes ✅ (Phase 9.4); group monitors still deferred |
 | Distributed process groups | Requires clustering first |
 | Priority message channels | ✅ Shipped in Phase 7 (Signal > Stop > Supervision > Message) |
 | State machines (`gen_statem`) | Protocol implementations |
