@@ -9,9 +9,11 @@ use crate::shutdown_signal::{register_shutdown_on_signal, spawn_shutdown_signal_
 use crate::shutdown_signal::SignalGuard;
 use crate::RemoteMessage;
 use spawned_address::{local_node, set_local_node_for_test, ActorAddress, NodeId};
+use super::{start_supervision_broker, SupervisionBroker, SupervisionBrokerInner};
 use spawned_cluster::{
-    AddressDispatch, AsyncTransport, ClusterRouter, ControlPlaneHooks, TcpAsyncTransport,
-    TcpClusterListener, TcpTransport, Transport, TransportError, UnavailableTransport,
+    AddressDispatch, AsyncTransport, ClusterRouter, ControlPlaneHooks, SupervisionHooks,
+    TcpAsyncTransport, TcpClusterListener, TcpTransport, Transport, TransportError,
+    UnavailableTransport,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -63,6 +65,8 @@ pub struct Node {
     router: Arc<ClusterRouter>,
     backend: ClusterBackend,
     dispatch: Arc<AddressDispatch>,
+    supervision: Option<Arc<SupervisionBrokerInner>>,
+    _supervision_broker: Option<crate::tasks::ActorRef<SupervisionBroker>>,
     _signal_guards: Vec<SignalGuard>,
 }
 
@@ -97,6 +101,23 @@ impl Node {
             ClusterBackend::Libp2p(cluster) => cluster.listen_addrs(),
             _ => Vec::new(),
         }
+    }
+
+    /// Register a local actor for inbound remote supervision signals.
+    pub fn register_supervision(
+        &self,
+        address: ActorAddress,
+        handle: ChildHandle,
+    ) -> Result<(), NodeError> {
+        self.supervision
+            .as_ref()
+            .ok_or_else(|| {
+                NodeError::InvalidConfig(
+                    "supervision broker not running (cluster listen/peer required)".into(),
+                )
+            })?
+            .register(address, handle)
+            .map_err(NodeError::Transport)
     }
 
     /// Register a tasks-runtime actor for inbound wire delivery.
@@ -274,6 +295,29 @@ impl NodeBuilder {
         let local = local_node();
         let dispatch = Arc::new(AddressDispatch::new());
 
+        let cluster_active = {
+            #[cfg(feature = "cluster-libp2p")]
+            {
+                match self.transport {
+                    TransportKind::Libp2p => {
+                        self.listen_libp2p.is_some() || !self.libp2p_peers.is_empty()
+                    }
+                    TransportKind::Tcp => self.listen.is_some() || !self.peers.is_empty(),
+                }
+            }
+            #[cfg(not(feature = "cluster-libp2p"))]
+            {
+                self.listen.is_some() || !self.peers.is_empty()
+            }
+        };
+
+        let (supervision_broker, supervision_inner) = if cluster_active {
+            let (broker, inner) = start_supervision_broker(local.clone());
+            (Some(broker), Some(inner))
+        } else {
+            (None, None)
+        };
+
         #[cfg(feature = "cluster-libp2p")]
         let federated = match self.transport {
             TransportKind::Libp2p => {
@@ -285,7 +329,7 @@ impl NodeBuilder {
         #[cfg(not(feature = "cluster-libp2p"))]
         let federated = self.listen.is_some() || !self.peers.is_empty();
 
-        let control = if federated {
+        let mut control = if federated {
             ControlPlaneHooks::federated(
                 Arc::new(|event| super::named_registry::apply_remote_event(event)),
                 Arc::new(super::named_registry::local_snapshot),
@@ -296,9 +340,23 @@ impl NodeBuilder {
             ControlPlaneHooks::none()
         };
 
+        if let Some(inner) = supervision_inner.as_ref() {
+            let broker_inner = inner.clone();
+            control = control.with_supervision(SupervisionHooks::from_fn(Arc::new(
+                move |envelope| broker_inner.apply(envelope),
+            )));
+        }
+
         #[cfg(feature = "cluster-libp2p")]
         if self.transport == TransportKind::Libp2p {
-            return self.build_libp2p(local, dispatch, control, federated);
+            return self.build_libp2p(
+                local,
+                dispatch,
+                control,
+                federated,
+                supervision_broker,
+                supervision_inner,
+            );
         }
 
         let tcp: Option<Arc<TcpTransport>> = if self.peers.is_empty() {
@@ -319,6 +377,19 @@ impl NodeBuilder {
                 let tcp_pg = tcp.clone();
                 super::pg_sync::install(move |event| {
                     let _ = tcp_pg.broadcast_pg(event);
+                });
+            }
+            if let Some(inner) = supervision_inner.as_ref() {
+                let local_sup = local.clone();
+                let inner_sup = inner.clone();
+                let tcp_sup = tcp.clone();
+                super::supervision_sync::install(move |envelope| {
+                    let _ = super::supervision_routing::publish_routed(
+                        &local_sup,
+                        envelope,
+                        |env| inner_sup.apply(env).map(|_| ()),
+                        |node, env| tcp_sup.send_supervision(&node, env),
+                    );
                 });
             }
         }
@@ -362,6 +433,8 @@ impl NodeBuilder {
                 listener,
             },
             dispatch,
+            supervision: supervision_inner,
+            _supervision_broker: supervision_broker,
             _signal_guards,
         })
     }
@@ -373,6 +446,8 @@ impl NodeBuilder {
         dispatch: Arc<AddressDispatch>,
         control: ControlPlaneHooks,
         federated: bool,
+        supervision_broker: Option<crate::tasks::ActorRef<SupervisionBroker>>,
+        supervision_inner: Option<Arc<SupervisionBrokerInner>>,
     ) -> Result<Node, NodeError> {
         let listen = match self.listen_libp2p {
             Some(addr) => addr,
@@ -423,6 +498,20 @@ impl NodeBuilder {
             });
         }
 
+        if let Some(inner) = supervision_inner.as_ref() {
+            let local_sup = local.clone();
+            let inner_sup = inner.clone();
+            let cluster_sup = cluster.clone();
+            super::supervision_sync::install(move |envelope| {
+                let _ = super::supervision_routing::publish_routed(
+                    &local_sup,
+                    envelope,
+                    |env| inner_sup.apply(env).map(|_| ()),
+                    |node, env| cluster_sup.send_supervision_to(&node, env),
+                );
+            });
+        }
+
         let transport: Arc<dyn Transport> = cluster.clone();
         let async_transport: Arc<dyn AsyncTransport> = cluster.clone();
         let router = Arc::new(ClusterRouter::with_async(
@@ -443,6 +532,8 @@ impl NodeBuilder {
             router,
             backend: ClusterBackend::Libp2p(cluster),
             dispatch,
+            supervision: supervision_inner,
+            _supervision_broker: supervision_broker,
             _signal_guards,
         })
     }

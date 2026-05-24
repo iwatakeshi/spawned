@@ -317,6 +317,19 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 |-------|--------|
 | **12.1** | Supervision protocol + control plane hooks — shipped |
 
+### 12.2. SupervisionBroker + Node wiring — shipped
+
+- `SupervisionBroker` actor + `SupervisionBrokerInner` per cluster node (tasks runtime)
+- `NodeBuilder` starts broker; wires inbound `SupervisionHooks` and `install_supervision_sync` publish routing
+- `Node::register_supervision` — register local `ChildHandle` for inbound remote signals
+- Inbound `Signal` (Stop / Shutdown / Kill) delivered to registered local actors
+- `SpawnRequest` stub reply until Phase 12.3
+- Integration test: `concurrency/tests/supervision_signal_two_node.rs`
+
+| Phase | Focus |
+|-------|--------|
+| **12.2** | SupervisionBroker + Node wiring — shipped |
+
 ## Future Considerations
 
 | Feature | Notes |

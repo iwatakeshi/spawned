@@ -233,13 +233,24 @@ Supervision events use a **routed** control plane — unicast to a target node, 
 
 Integration tests: `cluster/tests/supervision_protocol.rs`, `supervision_tcp_roundtrip.rs`, `supervision_libp2p_roundtrip.rs`.
 
+### Phase 12.2: SupervisionBroker (shipped)
+
+Each cluster node runs a **SupervisionBroker** actor that handles inbound supervision wire events:
+
+- `NodeBuilder` starts the broker when listen/peer is configured and wires `ControlPlaneHooks::with_supervision`
+- `install_supervision_sync` routes outbound envelopes unicast via `TcpTransport::send_supervision` / `Libp2pCluster::send_supervision_to`
+- `Node::register_supervision(address, child_handle)` registers local actors for inbound `Signal` delivery
+- `SpawnRequest` returns `SpawnErr("remote spawn not implemented")` until Phase 12.3
+
+Integration test: `concurrency/tests/supervision_signal_two_node.rs` (remote `Signal::Shutdown`).
+
 ### Clustering checklist (every feature PR)
 
 1. **Address, not local id** — Public handles that may be grouped or looked up use `ActorAddress`.
 2. **Serializable boundary** — Cross-node messages implement `RemoteMessage`. Control plane (`Exit`, stop, OS signals) stays local.
 3. **Registry names are global** — Named registration implies cluster-wide uniqueness (federation in Phase 10).
 4. **pg members are addresses** — Internal pg keys use `ActorAddress`; local join fills in `local_node()`.
-5. **Supervision stays local-first** — Restart/stop/kill target local mailboxes until Phase 12.2 broker ships.
+5. **Supervision signals** — Register local actors with `Node::register_supervision` for remote stop/shutdown/kill; remote spawn arrives in Phase 12.3.
 6. **Threads mode** — Address/wire types are sync-safe; remote I/O may delegate to a cluster runtime (tasks MVP first).
 
 ## Roadmap (summary)
@@ -257,5 +268,6 @@ Integration tests: `cluster/tests/supervision_protocol.rs`, `supervision_tcp_rou
 | **11.1** | NodeBuilder libp2p bootstrap (this document) |
 | **11.2** | Async remote requests (this document) |
 | **12.1** | Supervision control plane protocol (this document) |
+| **12.2** | SupervisionBroker + Node wiring (this document) |
 
 See [ROADMAP.md](ROADMAP.md) for full detail.
