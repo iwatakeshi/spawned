@@ -15,7 +15,7 @@ use crate::supervisor::{
 };
 
 #[cfg(feature = "cluster")]
-use crate::cluster::{request_spawn, RemoteChildHandle};
+use crate::cluster::{request_spawn_async, shutdown_remote, RemoteChildHandle, RemoteSpawnMeta};
 #[cfg(feature = "cluster")]
 use spawned_address::NodeId;
 #[cfg(feature = "cluster")]
@@ -74,14 +74,6 @@ impl Default for DynamicSupervisorBuilder {
     fn default() -> Self {
         Self::new()
     }
-}
-
-#[cfg(feature = "cluster")]
-#[derive(Clone)]
-struct RemoteSpawnMeta {
-    spec: RemoteSpawnSpec,
-    placement: NodeId,
-    link: bool,
 }
 
 /// Dynamic supervisor for runtime child pools (OneForOne only).
@@ -287,12 +279,9 @@ impl DynamicSupervisor {
         let parent = ctx.actor_address();
         let spec_for_rpc = spec.clone();
         let placement_for_rpc = placement.clone();
-        let address = spawned_rt::tasks::spawn_blocking(move || {
-            request_spawn(&placement_for_rpc, parent, spec_for_rpc, link)
-        })
-        .await
-        .map_err(|_| DynamicSupervisorError::RemoteSpawn("spawn task failed".into()))?
-        .map_err(|e| DynamicSupervisorError::RemoteSpawn(e.to_string()))?;
+        let address = request_spawn_async(&placement_for_rpc, parent, spec_for_rpc, link)
+            .await
+            .map_err(|e| DynamicSupervisorError::RemoteSpawn(e.to_string()))?;
 
         let remote = RemoteChildHandle::new(address.clone(), ctx.actor_address());
         let start_index = self.logic.next_start_index();
@@ -333,19 +322,10 @@ impl DynamicSupervisor {
         let placement = meta.placement.clone();
         let spec = meta.spec.clone();
         let link = meta.link;
-        let address = match spawned_rt::tasks::spawn_blocking(move || {
-            request_spawn(&placement, parent, spec, link)
-        })
-        .await
-        {
-            Ok(Ok(address)) => address,
-            Ok(Err(err)) => {
+        let address = match request_spawn_async(&placement, parent, spec, link).await {
+            Ok(address) => address,
+            Err(err) => {
                 tracing::error!(child_id, error = %err, "remote child restart failed");
-                self.cleanup_child(child_id);
-                return;
-            }
-            Err(_) => {
-                tracing::error!(child_id, "remote child restart task failed");
                 self.cleanup_child(child_id);
                 return;
             }
@@ -408,7 +388,12 @@ impl DynamicSupervisor {
         #[cfg(feature = "cluster")]
         if let Some(child_id) = self.remote_actor_to_id.get(&actor_id).cloned() {
             if let Some(remote) = self.remote_handles.remove(&child_id) {
-                remote.shutdown().map_err(|e| {
+                let shutdown = self
+                    .specs
+                    .get(&child_id)
+                    .map(|spec| spec.shutdown)
+                    .unwrap_or(ShutdownType::Infinity);
+                shutdown_remote(&remote, shutdown).map_err(|e| {
                     DynamicSupervisorError::RemoteSpawn(e.to_string())
                 })?;
                 self.remote_actor_to_id.remove(&actor_id);
@@ -517,7 +502,7 @@ impl Actor for DynamicSupervisor {
         #[cfg(feature = "cluster")]
         {
             for remote in self.remote_handles.values() {
-                let _ = remote.shutdown();
+                let _ = shutdown_remote(remote, ShutdownType::Infinity);
             }
             self.remote_handles.clear();
             self.remote_actor_to_id.clear();

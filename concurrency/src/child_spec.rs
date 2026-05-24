@@ -168,6 +168,22 @@ pub fn should_restart(restart: RestartType, reason: &ExitReason) -> bool {
 pub type ChildStartFn =
     Arc<dyn Fn(&ChildHandle, MailboxConfig, Option<&PgMembership>) -> ChildHandle + Send + Sync>;
 
+#[cfg(feature = "cluster")]
+pub(crate) fn unreachable_start() -> ChildStartFn {
+    Arc::new(|_, _, _| panic!("remote child spec cannot be started locally"))
+}
+
+#[cfg(feature = "cluster")]
+/// How a remote child is spawned on a placement node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteChildSpec {
+    Named { spec_name: String },
+    Worker {
+        worker_type: String,
+        init: Vec<u8>,
+    },
+}
+
 /// Process group to join when a supervised child starts (see [`ChildSpec::with_pg_group`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PgMembership {
@@ -185,6 +201,10 @@ pub struct ChildSpec {
     pub backoff: RestartBackoff,
     pub pg_membership: Option<PgMembership>,
     pub(crate) start: ChildStartFn,
+    #[cfg(feature = "cluster")]
+    pub placement: crate::cluster::Placement,
+    #[cfg(feature = "cluster")]
+    pub remote: Option<RemoteChildSpec>,
 }
 
 impl Clone for ChildSpec {
@@ -198,6 +218,10 @@ impl Clone for ChildSpec {
             mailbox: self.mailbox,
             backoff: self.backoff,
             pg_membership: self.pg_membership.clone(),
+            #[cfg(feature = "cluster")]
+            placement: self.placement.clone(),
+            #[cfg(feature = "cluster")]
+            remote: self.remote.clone(),
         }
     }
 }
@@ -243,6 +267,19 @@ impl ChildSpec {
 
     pub fn with_backoff(mut self, backoff: RestartBackoff) -> Self {
         self.backoff = backoff;
+        self
+    }
+
+    /// Whether this child runs on a remote node.
+    #[cfg(feature = "cluster")]
+    pub fn is_remote(&self) -> bool {
+        matches!(self.placement, crate::cluster::Placement::Remote(_))
+    }
+
+    /// Set explicit placement (local children only; remote children use `remote_*` constructors).
+    #[cfg(feature = "cluster")]
+    pub fn with_placement(mut self, placement: crate::cluster::Placement) -> Self {
+        self.placement = placement;
         self
     }
 }

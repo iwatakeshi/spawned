@@ -292,6 +292,11 @@ fn spawn_worker(
     Err(format!("unknown worker type: {worker_type}"))
 }
 
+enum NamedSpecRuntime {
+    Tasks,
+    Threads,
+}
+
 fn spawn_named_spec(
     name: &str,
     overrides: &RemoteSpecOverrides,
@@ -304,18 +309,22 @@ fn spawn_named_spec(
     if !link {
         return Err("named remote spec requires link=true".into());
     }
-    let mut inner = resolve_named_spec(name)?;
+    let (mut inner, runtime) = resolve_named_spec(name)?;
     apply_overrides(&mut inner, overrides);
-    Ok(inner.start_child(parent))
+    let parent = parent.clone();
+    match runtime {
+        NamedSpecRuntime::Tasks => dispatch_tasks_spawn(move || inner.start_child(&parent)),
+        NamedSpecRuntime::Threads => Ok(inner.start_child(&parent)),
+    }
 }
 
-fn resolve_named_spec(name: &str) -> Result<InnerChildSpec, String> {
+fn resolve_named_spec(name: &str) -> Result<(InnerChildSpec, NamedSpecRuntime), String> {
     let guard = store().read().unwrap_or_else(|p| p.into_inner());
     if let Some(factory) = guard.tasks.named_specs.get(name) {
-        return Ok(factory());
+        return Ok((factory(), NamedSpecRuntime::Tasks));
     }
     if let Some(factory) = guard.threads.named_specs.get(name) {
-        return Ok(factory());
+        return Ok((factory(), NamedSpecRuntime::Threads));
     }
     Err(format!("unknown named spec: {name}"))
 }

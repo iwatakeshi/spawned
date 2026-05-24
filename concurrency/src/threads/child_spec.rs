@@ -39,6 +39,10 @@ impl ChildSpec {
             mailbox: MailboxConfig::default_worker(),
             backoff: RestartBackoff::default(),
             pg_membership: None,
+            #[cfg(feature = "cluster")]
+            placement: crate::cluster::Placement::Local,
+            #[cfg(feature = "cluster")]
+            remote: None,
         })
     }
 
@@ -64,7 +68,69 @@ impl ChildSpec {
             mailbox: MailboxConfig::unbounded(),
             backoff: RestartBackoff::default(),
             pg_membership: None,
+            #[cfg(feature = "cluster")]
+            placement: crate::cluster::Placement::Local,
+            #[cfg(feature = "cluster")]
+            remote: None,
         })
+    }
+
+    /// Create a remote child spec backed by a registered named spec on the placement node.
+    #[cfg(feature = "cluster")]
+    pub fn remote_named(
+        id: impl Into<String>,
+        spec_name: impl Into<String>,
+        placement: spawned_address::NodeId,
+        restart: RestartType,
+    ) -> Self {
+        use crate::child_spec::{unreachable_start, RemoteChildSpec};
+        Self(InnerChildSpec {
+            id: id.into(),
+            start: unreachable_start(),
+            restart,
+            shutdown: DEFAULT_WORKER_SHUTDOWN,
+            child_type: ChildType::Worker,
+            mailbox: MailboxConfig::default_worker(),
+            backoff: RestartBackoff::default(),
+            pg_membership: None,
+            placement: crate::cluster::Placement::Remote(placement),
+            remote: Some(RemoteChildSpec::Named {
+                spec_name: spec_name.into(),
+            }),
+        })
+    }
+
+    /// Create a remote child spec backed by a registered worker type on the placement node.
+    #[cfg(feature = "cluster")]
+    pub fn remote_worker(
+        id: impl Into<String>,
+        worker_type: impl Into<String>,
+        init: impl serde::Serialize,
+        placement: spawned_address::NodeId,
+        restart: RestartType,
+    ) -> Self {
+        use crate::child_spec::{unreachable_start, RemoteChildSpec};
+        let init = postcard::to_allocvec(&init).expect("remote worker init must serialize");
+        Self(InnerChildSpec {
+            id: id.into(),
+            start: unreachable_start(),
+            restart,
+            shutdown: DEFAULT_WORKER_SHUTDOWN,
+            child_type: ChildType::Worker,
+            mailbox: MailboxConfig::default_worker(),
+            backoff: RestartBackoff::default(),
+            pg_membership: None,
+            placement: crate::cluster::Placement::Remote(placement),
+            remote: Some(RemoteChildSpec::Worker {
+                worker_type: worker_type.into(),
+                init,
+            }),
+        })
+    }
+
+    #[cfg(feature = "cluster")]
+    pub fn with_placement(self, placement: crate::cluster::Placement) -> Self {
+        Self(self.0.with_placement(placement))
     }
 
     pub fn with_shutdown(self, shutdown: ShutdownType) -> Self {

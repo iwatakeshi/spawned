@@ -13,6 +13,7 @@ mod supervision_broker;
 mod supervision_exit;
 mod supervision_link;
 mod supervision_monitor;
+mod supervision_remote;
 mod supervision_routing;
 mod supervision_sync;
 mod wire_dispatch;
@@ -26,6 +27,10 @@ pub use pg_sync::install_pg_sync;
 pub use registry_sync::install_registry_sync;
 pub use remote_spawn::{
     install_tasks_runtime, request_spawn, Placement, RemoteChildHandle, RemoteSpawnError,
+};
+pub use supervision_remote::{
+    overrides_from_spec, remote_spawn_spec_from_inner, request_spawn_async, request_spawn_blocking,
+    shutdown_remote, RemoteSpawnMeta,
 };
 pub use supervision_link::{propagate_remote_link_exits, publish_link, publish_unlink};
 pub use supervision_monitor::{

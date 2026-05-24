@@ -338,7 +338,7 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 - `install_tasks_runtime` — dispatch worker starts from TCP listener threads onto the app runtime
 - Integration test: `concurrency/tests/supervision_spawn_two_node.rs`
 
-Deferred to **12.6+**: cross-node link, static supervisor `ChildSpec::placement` (12.7).
+Deferred to **12.6+**: cross-node link (12.6), static supervisor remote placement (12.7).
 
 | Phase | Focus |
 |-------|--------|
@@ -364,8 +364,6 @@ Deferred to **12.6+**: cross-node link, static supervisor `ChildSpec::placement`
 - Wire `Demonitor` includes `target` address (routes to placement node)
 - Integration test: `concurrency/tests/supervision_monitor_two_node.rs`
 
-Deferred to **12.7**: static supervisor `ChildSpec::placement`.
-
 | Phase | Focus |
 |-------|--------|
 | **12.5** | Cross-node monitor propagation — shipped |
@@ -380,6 +378,23 @@ Deferred to **12.7**: static supervisor `ChildSpec::placement`.
 | Phase | Focus |
 |-------|--------|
 | **12.6** | Cross-node link propagation — shipped |
+
+### 12.7. Static supervisor remote placement — shipped
+
+- `ChildSpec::remote_named` / `ChildSpec::remote_worker` — declarative remote children with `Placement::Remote(node)`
+- Inner `ChildSpec` gains `placement` + `RemoteChildSpec`; shared helpers in `cluster/supervision_remote.rs`
+- Static `Supervisor` (tasks + threads): remote spawn/restart/shutdown, `register_supervision_actor` in `started()`
+- OneForAll / RestForOne batch terminate: local children block until dead; remote children signal-only (batch completes on subsequent `ChildExit`); skip shutdown for already-dead remotes
+- Batch restart restarts remote children before local children
+- `DynamicSupervisor` refactored to shared `RemoteSpawnMeta` + spawn/shutdown helpers
+- Named-spec inbound spawn dispatches onto the tasks runtime (same as workers)
+- Integration tests: `supervision_static_remote_named_two_node.rs`, `supervision_static_remote_worker_two_node.rs`, `supervision_static_remote_batch_two_node.rs`
+
+Deferred to **12.8**: example app + API-GUIDE docs.
+
+| Phase | Focus |
+|-------|--------|
+| **12.7** | Static supervisor remote placement — shipped |
 
 ## Future Considerations
 

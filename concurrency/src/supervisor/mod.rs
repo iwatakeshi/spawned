@@ -218,6 +218,13 @@ impl SupervisorLogic {
         self.children.iter().any(|child| child.policy.id == id)
     }
 
+    /// Whether a registered child is still marked alive.
+    pub fn is_child_alive(&self, child_id: &str) -> bool {
+        self.children.iter().any(|child| {
+            child.policy.id == child_id && child.handle.is_some_and(|slot| slot.alive)
+        })
+    }
+
     /// Next start index for a dynamically added child.
     pub fn next_start_index(&self) -> usize {
         self.children

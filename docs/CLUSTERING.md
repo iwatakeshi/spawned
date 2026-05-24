@@ -313,13 +313,39 @@ When an actor on node A links to a remote actor on node B:
 
 Integration test: `concurrency/tests/supervision_link_two_node.rs`.
 
+### Phase 12.7: Static supervisor remote placement (shipped)
+
+Declarative supervisor trees can mix local and remote children:
+
+```rust
+Supervisor::builder()
+    .strategy(SupervisorStrategy::OneForOne)
+    .child(ChildSpec::worker("local", || LocalWorker::new(), RestartType::Permanent))
+    .child(ChildSpec::remote_worker(
+        "remote",
+        "spawned.Counter/v1",
+        CounterInit { start: 0 },
+        worker_node.clone(),
+        RestartType::Permanent,
+    ))
+    .start();
+```
+
+- **`ChildSpec::remote_named(id, spec_name, node, restart)`** — placement-node registry lookup via `register_remote_spec`
+- **`ChildSpec::remote_worker(id, worker_type, init, node, restart)`** — `init` serialized with postcard at spec-build time
+- Static supervisor auto-registers with `register_supervision_actor` and spawns remotes with `link=true` in `started()`
+- Remote restart re-issues `request_spawn`; remote shutdown in `stopped()` / batch terminate is signal-based (no cross-node shutdown wait in 12.7)
+- **Batch terminate caveat:** mixed local+remote batches complete when all targeted children are marked dead — remotes may finish asynchronously after local blocking shutdown
+
+Integration tests: `concurrency/tests/supervision_static_remote_*_two_node.rs`.
+
 ### Clustering checklist (every feature PR)
 
 1. **Address, not local id** — Public handles that may be grouped or looked up use `ActorAddress`.
 2. **Serializable boundary** — Cross-node messages implement `RemoteMessage`. Control plane (`Exit`, stop, OS signals) stays local.
 3. **Registry names are global** — Named registration implies cluster-wide uniqueness (federation in Phase 10).
 4. **pg members are addresses** — Internal pg keys use `ActorAddress`; local join fills in `local_node()`.
-5. **Supervision signals** — Register local actors with `Node::register_supervision` for remote stop/shutdown/kill; remote spawn via `register_remote_worker` / `DynamicSupervisor::start_child_remote` (Phase 12.3).
+5. **Supervision signals** — Register local actors with `Node::register_supervision` for remote stop/shutdown/kill; remote spawn via `register_remote_worker` / `DynamicSupervisor::start_child_remote` (12.3) or declarative `ChildSpec::remote_*` on static supervisors (12.7).
 6. **Threads mode** — Address/wire types are sync-safe; remote I/O may delegate to a cluster runtime (tasks MVP first).
 
 ## Roadmap (summary)
@@ -342,5 +368,6 @@ Integration test: `concurrency/tests/supervision_link_two_node.rs`.
 | **12.4** | ChildExit propagation + remote restart (this document) |
 | **12.5** | Cross-node monitor propagation (this document) |
 | **12.6** | Cross-node link propagation (this document) |
+| **12.7** | Static supervisor remote placement (this document) |
 
 See [ROADMAP.md](ROADMAP.md) for full detail.
