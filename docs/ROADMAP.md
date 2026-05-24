@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after Phase 8d (Node bootstrap).
+**Last updated:** after Phase 9.1 (restart backoff).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 

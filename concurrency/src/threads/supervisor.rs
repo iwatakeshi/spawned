@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::child_handle::ChildHandle;
 use crate::child_spec::{
-    shutdown_child_blocking, warn_supervisor_timeout, ChildType, RestartIntensity, RestartType,
-    ShutdownType, DEFAULT_WORKER_SHUTDOWN,
+    shutdown_child_blocking, warn_supervisor_timeout, ChildType, RestartBackoff, RestartIntensity,
+    RestartType, ShutdownType, DEFAULT_WORKER_SHUTDOWN,
 };
 use crate::link::Exit;
 use crate::mailbox::MailboxConfig;
@@ -25,6 +25,7 @@ pub struct ChildSpec {
     pub shutdown: ShutdownType,
     pub child_type: ChildType,
     pub mailbox: MailboxConfig,
+    pub backoff: RestartBackoff,
 }
 
 impl Clone for ChildSpec {
@@ -36,6 +37,7 @@ impl Clone for ChildSpec {
             shutdown: self.shutdown,
             child_type: self.child_type,
             mailbox: self.mailbox,
+            backoff: self.backoff,
         }
     }
 }
@@ -57,6 +59,7 @@ impl ChildSpec {
             shutdown: DEFAULT_WORKER_SHUTDOWN,
             child_type: ChildType::Worker,
             mailbox: MailboxConfig::unbounded(),
+            backoff: RestartBackoff::default(),
         }
     }
 
@@ -76,6 +79,7 @@ impl ChildSpec {
             shutdown: ShutdownType::Infinity,
             child_type: ChildType::Supervisor,
             mailbox: MailboxConfig::unbounded(),
+            backoff: RestartBackoff::default(),
         }
     }
 
@@ -87,6 +91,11 @@ impl ChildSpec {
 
     pub fn with_mailbox(mut self, mailbox: MailboxConfig) -> Self {
         self.mailbox = mailbox;
+        self
+    }
+
+    pub fn with_backoff(mut self, backoff: RestartBackoff) -> Self {
+        self.backoff = backoff;
         self
     }
 }
@@ -194,13 +203,30 @@ impl Supervisor {
         }
     }
 
+    fn backoff_for(&self, child_id: &str) -> RestartBackoff {
+        self.specs
+            .iter()
+            .find(|spec| spec.id == child_id)
+            .map(|spec| spec.backoff)
+            .unwrap_or_default()
+    }
+
+    fn restart_child_with_backoff(&mut self, ctx: &Context<Self>, child_id: &str) {
+        let backoff = self.backoff_for(child_id);
+        let delay = self.logic.backoff_delay(child_id, backoff);
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
+        self.restart_child(ctx, child_id);
+    }
+
     fn maybe_complete_batch_restart(&mut self, ctx: &Context<Self>) {
         if !self.logic.pending_batch_restart_complete() {
             return;
         }
         if let Some(ids) = self.logic.take_pending_restart_ids() {
             for id in ids {
-                self.restart_child(ctx, &id);
+                self.restart_child_with_backoff(ctx, &id);
             }
         }
     }
@@ -217,7 +243,7 @@ impl Supervisor {
             .on_child_exit(exit.from, &exit.reason, Instant::now())
         {
             SupervisorAction::Ignore => {}
-            SupervisorAction::RestartOne(id) => self.restart_child(ctx, &id),
+            SupervisorAction::RestartOne(id) => self.restart_child_with_backoff(ctx, &id),
             SupervisorAction::TerminateBatch(ids) => {
                 self.terminate_children(&ids);
                 self.maybe_complete_batch_restart(ctx);

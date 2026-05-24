@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use crate::child_handle::{ActorId, ChildHandle};
 use crate::child_spec::{
-    shutdown_child_async, warn_supervisor_timeout, ChildType, RestartIntensity, RestartType,
-    ShutdownType, DEFAULT_WORKER_SHUTDOWN,
+    shutdown_child_async, warn_supervisor_timeout, ChildType, RestartBackoff, RestartIntensity,
+    RestartType, ShutdownType, DEFAULT_WORKER_SHUTDOWN,
 };
 use crate::dynamic_supervisor::{instance_id, DynamicChildInfo, DynamicSupervisorError};
 use crate::link::Exit;
@@ -29,6 +29,7 @@ pub struct ChildSpec {
     pub shutdown: ShutdownType,
     pub child_type: ChildType,
     pub mailbox: MailboxConfig,
+    pub backoff: RestartBackoff,
 }
 
 impl Clone for ChildSpec {
@@ -40,6 +41,7 @@ impl Clone for ChildSpec {
             shutdown: self.shutdown,
             child_type: self.child_type,
             mailbox: self.mailbox,
+            backoff: self.backoff,
         }
     }
 }
@@ -61,6 +63,7 @@ impl ChildSpec {
             shutdown: DEFAULT_WORKER_SHUTDOWN,
             child_type: ChildType::Worker,
             mailbox: MailboxConfig::unbounded(),
+            backoff: RestartBackoff::default(),
         }
     }
 
@@ -80,6 +83,7 @@ impl ChildSpec {
             shutdown: ShutdownType::Infinity,
             child_type: ChildType::Supervisor,
             mailbox: MailboxConfig::unbounded(),
+            backoff: RestartBackoff::default(),
         }
     }
 
@@ -91,6 +95,11 @@ impl ChildSpec {
 
     pub fn with_mailbox(mut self, mailbox: MailboxConfig) -> Self {
         self.mailbox = mailbox;
+        self
+    }
+
+    pub fn with_backoff(mut self, backoff: RestartBackoff) -> Self {
+        self.backoff = backoff;
         self
     }
 }
@@ -334,6 +343,22 @@ impl DynamicSupervisor {
         Ok(())
     }
 
+    fn backoff_for(&self, child_id: &str) -> RestartBackoff {
+        self.specs
+            .get(child_id)
+            .map(|spec| spec.backoff)
+            .unwrap_or_default()
+    }
+
+    async fn restart_child_with_backoff(&mut self, ctx: &Context<Self>, child_id: &str) {
+        let backoff = self.backoff_for(child_id);
+        let delay = self.logic.backoff_delay(child_id, backoff);
+        if !delay.is_zero() {
+            spawned_rt::tasks::sleep(delay).await;
+        }
+        self.restart_child(ctx, child_id);
+    }
+
     async fn handle_exit(&mut self, exit: Exit, ctx: &Context<Self>) {
         match self
             .logic
@@ -348,7 +373,7 @@ impl DynamicSupervisor {
                     self.cleanup_child(&child_id);
                 }
             }
-            SupervisorAction::RestartOne(id) => self.restart_child(ctx, &id),
+            SupervisorAction::RestartOne(id) => self.restart_child_with_backoff(ctx, &id).await,
             SupervisorAction::TerminateBatch(_) | SupervisorAction::Meltdown => {
                 tracing::error!(
                     supervisor = ?ctx.id(),

@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::child_handle::ChildHandle;
 use crate::child_spec::{
-    shutdown_child_async, warn_supervisor_timeout, ChildType, RestartIntensity, RestartType,
-    ShutdownType, DEFAULT_WORKER_SHUTDOWN,
+    shutdown_child_async, warn_supervisor_timeout, ChildType, RestartBackoff, RestartIntensity,
+    RestartType, ShutdownType, DEFAULT_WORKER_SHUTDOWN,
 };
 use crate::link::Exit;
 use crate::mailbox::MailboxConfig;
@@ -25,6 +25,7 @@ pub struct ChildSpec {
     pub shutdown: ShutdownType,
     pub child_type: ChildType,
     pub mailbox: MailboxConfig,
+    pub backoff: RestartBackoff,
 }
 
 impl Clone for ChildSpec {
@@ -36,6 +37,7 @@ impl Clone for ChildSpec {
             shutdown: self.shutdown,
             child_type: self.child_type,
             mailbox: self.mailbox,
+            backoff: self.backoff,
         }
     }
 }
@@ -58,6 +60,7 @@ impl ChildSpec {
             shutdown: DEFAULT_WORKER_SHUTDOWN,
             child_type: ChildType::Worker,
             mailbox: MailboxConfig::unbounded(),
+            backoff: RestartBackoff::default(),
         }
     }
 
@@ -78,6 +81,7 @@ impl ChildSpec {
             shutdown: ShutdownType::Infinity,
             child_type: ChildType::Supervisor,
             mailbox: MailboxConfig::unbounded(),
+            backoff: RestartBackoff::default(),
         }
     }
 
@@ -89,6 +93,11 @@ impl ChildSpec {
 
     pub fn with_mailbox(mut self, mailbox: MailboxConfig) -> Self {
         self.mailbox = mailbox;
+        self
+    }
+
+    pub fn with_backoff(mut self, backoff: RestartBackoff) -> Self {
+        self.backoff = backoff;
         self
     }
 }
@@ -198,13 +207,30 @@ impl Supervisor {
         }
     }
 
-    fn maybe_complete_batch_restart(&mut self, ctx: &Context<Self>) {
+    fn backoff_for(&self, child_id: &str) -> RestartBackoff {
+        self.specs
+            .iter()
+            .find(|spec| spec.id == child_id)
+            .map(|spec| spec.backoff)
+            .unwrap_or_default()
+    }
+
+    async fn restart_child_with_backoff(&mut self, ctx: &Context<Self>, child_id: &str) {
+        let backoff = self.backoff_for(child_id);
+        let delay = self.logic.backoff_delay(child_id, backoff);
+        if !delay.is_zero() {
+            spawned_rt::tasks::sleep(delay).await;
+        }
+        self.restart_child(ctx, child_id);
+    }
+
+    async fn maybe_complete_batch_restart(&mut self, ctx: &Context<Self>) {
         if !self.logic.pending_batch_restart_complete() {
             return;
         }
         if let Some(ids) = self.logic.take_pending_restart_ids() {
             for id in ids {
-                self.restart_child(ctx, &id);
+                self.restart_child_with_backoff(ctx, &id).await;
             }
         }
     }
@@ -212,7 +238,7 @@ impl Supervisor {
     async fn handle_exit(&mut self, exit: Exit, ctx: &Context<Self>) {
         if self.logic.suppress_restarts() {
             self.logic.note_exit_during_batch(exit.from);
-            self.maybe_complete_batch_restart(ctx);
+            self.maybe_complete_batch_restart(ctx).await;
             return;
         }
 
@@ -221,10 +247,10 @@ impl Supervisor {
             .on_child_exit(exit.from, &exit.reason, Instant::now())
         {
             SupervisorAction::Ignore => {}
-            SupervisorAction::RestartOne(id) => self.restart_child(ctx, &id),
+            SupervisorAction::RestartOne(id) => self.restart_child_with_backoff(ctx, &id).await,
             SupervisorAction::TerminateBatch(ids) => {
                 self.terminate_children(&ids).await;
-                self.maybe_complete_batch_restart(ctx);
+                self.maybe_complete_batch_restart(ctx).await;
             }
             SupervisorAction::Meltdown => {
                 tracing::error!(
@@ -275,15 +301,30 @@ mod tests {
     use crate::message::Message;
     use crate::tasks::actor::Handler;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-    use std::time::Duration;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     struct FlakyWorker {
         starts: Arc<AtomicUsize>,
     }
 
+    struct TimedFlakyWorker {
+        starts: Arc<AtomicUsize>,
+        times: Arc<Mutex<Vec<Instant>>>,
+    }
+
     impl Actor for FlakyWorker {
         async fn started(&mut self, _ctx: &Context<Self>) {
+            let n = self.starts.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                panic!("first start dies");
+            }
+        }
+    }
+
+    impl Actor for TimedFlakyWorker {
+        async fn started(&mut self, _ctx: &Context<Self>) {
+            self.times.lock().unwrap().push(Instant::now());
             let n = self.starts.fetch_add(1, Ordering::SeqCst);
             if n == 0 {
                 panic!("first start dies");
@@ -353,6 +394,47 @@ mod tests {
             assert!(sup.exit_reason().is_none());
 
             let _ = sup.request(GetChildId("worker".into())).await.unwrap();
+
+            sup.child_handle().stop();
+            sup.join().await;
+        });
+    }
+
+    #[test]
+    fn restart_backoff_delays_restarts() {
+        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let starts = Arc::new(AtomicUsize::new(0));
+            let times = Arc::new(Mutex::new(Vec::new()));
+
+            let sup = Supervisor::builder()
+                .child(
+                    ChildSpec::worker(
+                        "worker",
+                        {
+                            let starts = starts.clone();
+                            let times = times.clone();
+                            move || TimedFlakyWorker {
+                                starts: starts.clone(),
+                                times: times.clone(),
+                            }
+                        },
+                        RestartType::Permanent,
+                    )
+                    .with_backoff(RestartBackoff::Fixed(Duration::from_millis(80))),
+                )
+                .start();
+
+            for _ in 0..50 {
+                if starts.load(Ordering::SeqCst) >= 2 {
+                    break;
+                }
+                spawned_rt::tasks::sleep(Duration::from_millis(20)).await;
+            }
+
+            let stamps = times.lock().unwrap().clone();
+            assert_eq!(stamps.len(), 2);
+            assert!(stamps[1].duration_since(stamps[0]) >= Duration::from_millis(75));
 
             sup.child_handle().stop();
             sup.join().await;

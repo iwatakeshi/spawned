@@ -122,6 +122,37 @@ impl Default for RestartIntensity {
     }
 }
 
+/// Delay applied before restarting a child after an abnormal exit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartBackoff {
+    /// Restart immediately (default).
+    None,
+    /// Wait a fixed duration before each restart attempt.
+    Fixed(Duration),
+    /// Exponential delay: `base * 2^(attempt - 1)`, capped at `max`.
+    Exponential { base: Duration, max: Duration },
+}
+
+impl Default for RestartBackoff {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl RestartBackoff {
+    /// Delay before restart attempt `attempt` (1-based).
+    pub fn delay_for_attempt(self, attempt: u32) -> Duration {
+        match self {
+            Self::None => Duration::ZERO,
+            Self::Fixed(delay) => delay,
+            Self::Exponential { base, max } => {
+                let shift = attempt.saturating_sub(1).min(20);
+                base.saturating_mul(1u32 << shift).min(max)
+            }
+        }
+    }
+}
+
 /// Returns `true` if a child with `restart` policy should be restarted after `reason`.
 pub fn should_restart(restart: RestartType, reason: &ExitReason) -> bool {
     match restart {
@@ -282,5 +313,31 @@ mod tests {
         ] {
             assert!(!should_restart(RestartType::Temporary, &reason));
         }
+    }
+
+    #[test]
+    fn backoff_none_is_zero() {
+        assert_eq!(RestartBackoff::None.delay_for_attempt(1), Duration::ZERO);
+    }
+
+    #[test]
+    fn backoff_fixed_is_constant() {
+        let policy = RestartBackoff::Fixed(Duration::from_millis(50));
+        assert_eq!(policy.delay_for_attempt(1), Duration::from_millis(50));
+        assert_eq!(policy.delay_for_attempt(5), Duration::from_millis(50));
+    }
+
+    #[test]
+    fn backoff_exponential_doubles_and_caps() {
+        let policy = RestartBackoff::Exponential {
+            base: Duration::from_millis(10),
+            max: Duration::from_millis(100),
+        };
+        assert_eq!(policy.delay_for_attempt(1), Duration::from_millis(10));
+        assert_eq!(policy.delay_for_attempt(2), Duration::from_millis(20));
+        assert_eq!(policy.delay_for_attempt(3), Duration::from_millis(40));
+        assert_eq!(policy.delay_for_attempt(4), Duration::from_millis(80));
+        assert_eq!(policy.delay_for_attempt(5), Duration::from_millis(100));
+        assert_eq!(policy.delay_for_attempt(10), Duration::from_millis(100));
     }
 }

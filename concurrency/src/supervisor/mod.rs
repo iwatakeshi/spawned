@@ -1,9 +1,9 @@
 use crate::child_handle::ActorId;
-use crate::child_spec::{should_restart, RestartIntensity, RestartType};
+use crate::child_spec::{should_restart, RestartBackoff, RestartIntensity, RestartType};
 use crate::error::ExitReason;
 use std::cmp::Reverse;
-use std::collections::VecDeque;
-use std::time::Instant;
+use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
 /// How a supervisor reacts when a supervised child exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +109,7 @@ pub struct SupervisorLogic {
     children: Vec<SupervisedChild>,
     suppress_restarts: bool,
     pending_batch_restart: Option<BatchRestart>,
+    backoff_attempts: HashMap<String, u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,7 +126,26 @@ impl SupervisorLogic {
             children: Vec::new(),
             suppress_restarts: false,
             pending_batch_restart: None,
+            backoff_attempts: HashMap::new(),
         }
+    }
+
+    /// Delay before restarting `child_id`, based on consecutive restart attempts.
+    pub fn backoff_delay(&mut self, child_id: &str, policy: RestartBackoff) -> Duration {
+        if matches!(policy, RestartBackoff::None) {
+            return Duration::ZERO;
+        }
+        let attempt = self
+            .backoff_attempts
+            .entry(child_id.to_string())
+            .or_insert(0);
+        *attempt = attempt.saturating_add(1);
+        policy.delay_for_attempt(*attempt)
+    }
+
+    /// Clear backoff state after a non-restarting exit.
+    pub fn reset_backoff(&mut self, child_id: &str) {
+        self.backoff_attempts.remove(child_id);
     }
 
     pub fn strategy(&self) -> SupervisorStrategy {
@@ -279,6 +299,7 @@ impl SupervisorLogic {
         self.mark_child_dead(actor_id);
 
         if !should_restart(restart, reason) {
+            self.reset_backoff(&child_id);
             return SupervisorAction::Ignore;
         }
 
@@ -364,7 +385,7 @@ fn rest_for_one_ids(children: &[SupervisedChild], from_index: usize) -> Vec<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::child_spec::RestartType;
+    use crate::child_spec::{RestartBackoff, RestartType};
     use std::time::Duration;
 
     fn slot(_id: u64) -> ChildHandleSlot {
@@ -426,9 +447,15 @@ mod tests {
             },
             handle,
         );
+        logic.backoff_delay("w1", RestartBackoff::Fixed(Duration::from_millis(10)));
 
         let action = logic.on_child_exit(handle.id, &ExitReason::Shutdown, Instant::now());
         assert_eq!(action, SupervisorAction::Ignore);
+        assert_eq!(
+            logic.backoff_delay("w1", RestartBackoff::Fixed(Duration::from_millis(10))),
+            Duration::from_millis(10),
+            "backoff counter resets after non-restarting exit"
+        );
     }
 
     #[test]
@@ -587,6 +614,7 @@ mod tests {
             ],
             suppress_restarts: false,
             pending_batch_restart: None,
+            backoff_attempts: HashMap::new(),
         };
         assert_eq!(
             logic.shutdown_order(),
