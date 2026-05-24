@@ -1,10 +1,11 @@
 use crate::frame::{read_frame, write_frame};
 use crate::protocol::{
-    decode_handshake, encode_handshake, encode_reply, Handshake, WireReply, PROTOCOL_VERSION,
+    decode_cluster_frame, decode_handshake, encode_handshake, encode_reply, ClusterFrame,
+    Handshake, WireReply, PROTOCOL_VERSION,
 };
+use crate::registry::{apply_registry_event, send_snapshot, RegistryHooks};
 use crate::{InboundDispatch, TransportError};
 use spawned_address::NodeId;
-use spawned_wire::decode_envelope;
 use std::io::Read;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +13,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-/// TCP cluster listener that dispatches inbound envelopes.
+/// TCP cluster listener that dispatches inbound envelopes and registry events.
 pub struct TcpClusterListener {
     local_addr: SocketAddr,
     local_node: NodeId,
@@ -27,6 +28,16 @@ impl TcpClusterListener {
         local_node: NodeId,
         dispatch: Arc<dyn InboundDispatch>,
     ) -> Result<Self, TransportError> {
+        Self::bind_with_registry(addr, local_node, dispatch, RegistryHooks::none())
+    }
+
+    /// Bind with registry replication hooks for federated named registry.
+    pub fn bind_with_registry(
+        addr: SocketAddr,
+        local_node: NodeId,
+        dispatch: Arc<dyn InboundDispatch>,
+        registry: RegistryHooks,
+    ) -> Result<Self, TransportError> {
         let listener = TcpListener::bind(addr).map_err(|e| TransportError::Io(e.to_string()))?;
         let local_addr = listener.local_addr().map_err(|e| TransportError::Io(e.to_string()))?;
         listener
@@ -40,7 +51,7 @@ impl TcpClusterListener {
         let join = thread::Builder::new()
             .name("spawned-tcp-cluster".into())
             .spawn(move || {
-                accept_loop(listener, local, dispatch, shutdown_thread);
+                accept_loop(listener, local, dispatch, registry, shutdown_thread);
             })
             .map_err(|e| TransportError::Io(e.to_string()))?;
 
@@ -81,6 +92,7 @@ fn accept_loop(
     listener: TcpListener,
     local_node: NodeId,
     dispatch: Arc<dyn InboundDispatch>,
+    registry: RegistryHooks,
     shutdown: Arc<AtomicBool>,
 ) {
     while !shutdown.load(Ordering::Relaxed) {
@@ -88,8 +100,9 @@ fn accept_loop(
             Ok((stream, _addr)) => {
                 let dispatch = dispatch.clone();
                 let local = local_node.clone();
+                let registry = registry.clone();
                 thread::spawn(move || {
-                    if let Err(err) = serve_connection(stream, local, dispatch) {
+                    if let Err(err) = serve_connection(stream, local, dispatch, registry) {
                         tracing::debug!("cluster connection closed: {err}");
                     }
                 });
@@ -105,10 +118,12 @@ fn accept_loop(
     }
 }
 
+
 fn serve_connection(
     mut stream: TcpStream,
     local_node: NodeId,
     dispatch: Arc<dyn InboundDispatch>,
+    registry: RegistryHooks,
 ) -> Result<(), TransportError> {
     stream
         .set_nonblocking(false)
@@ -124,18 +139,28 @@ fn serve_connection(
     let ack = encode_handshake(&Handshake::local(local_node))?;
     write_frame(&mut stream, &ack)?;
 
+    if let Some(snapshot) = registry.snapshot.as_ref() {
+        send_snapshot(&mut stream, snapshot.as_ref())?;
+    }
+
     loop {
         let frame = read_frame(&mut stream)?;
-        let envelope = decode_envelope(&frame).map_err(TransportError::from)?;
-        let correlation_id = envelope.correlation_id;
-        let reply = dispatch.dispatch(envelope)?;
-        if correlation_id != 0 {
-            let wire_reply = WireReply {
-                correlation_id,
-                payload: reply.unwrap_or_default(),
-            };
-            let bytes = encode_reply(&wire_reply)?;
-            write_frame(&mut stream, &bytes)?;
+        match decode_cluster_frame(&frame).map_err(TransportError::from)? {
+            ClusterFrame::Registry(event) => {
+                apply_registry_event(&registry, event)?;
+            }
+            ClusterFrame::Actor(envelope) => {
+                let correlation_id = envelope.correlation_id;
+                let reply = dispatch.dispatch(envelope)?;
+                if correlation_id != 0 {
+                    let wire_reply = WireReply {
+                        correlation_id,
+                        payload: reply.unwrap_or_default(),
+                    };
+                    let bytes = encode_reply(&wire_reply)?;
+                    write_frame(&mut stream, &bytes)?;
+                }
+            }
         }
     }
 }

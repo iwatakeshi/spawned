@@ -1,7 +1,11 @@
 //! Named actor registration with cluster-ready [`ActorAddress`] lookup.
+//!
+//! Local actors store a [`ChildHandle`]; remote entries (Phase 10.1 federation)
+//! store only [`ActorAddress`] and replicate via registry control-plane events.
 
 use crate::child_handle::{ActorId, ChildHandle};
 use spawned_address::ActorAddress;
+use spawned_cluster::RegistryEvent;
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
@@ -35,6 +39,7 @@ fn store() -> &'static RwLock<NamedStore> {
 /// Register a local actor under a cluster-wide name.
 ///
 /// Stores both the [`ActorAddress`] and a clone of the [`ChildHandle`] for local dispatch.
+/// Replicates a [`RegistryEvent::Register`] to peers when federation is enabled.
 pub fn register_named(name: impl AsRef<str>, handle: ChildHandle) -> Result<(), NamedRegistryError> {
     use std::collections::hash_map::Entry;
     let name = name.as_ref().to_string();
@@ -44,14 +49,15 @@ pub fn register_named(name: impl AsRef<str>, handle: ChildHandle) -> Result<(), 
     match store.addresses.entry(name.clone()) {
         Entry::Occupied(_) => Err(NamedRegistryError::AlreadyRegistered(name)),
         Entry::Vacant(v) => {
-            v.insert(address);
-            store.handles.insert(name, handle);
+            v.insert(address.clone());
+            store.handles.insert(name.clone(), handle);
+            super::registry_sync::publish(RegistryEvent::Register { name, address });
             Ok(())
         }
     }
 }
 
-/// Look up a registered actor's [`ActorAddress`].
+/// Look up a registered actor's [`ActorAddress`] (local or federated remote).
 pub fn lookup_address(name: impl AsRef<str>) -> Option<ActorAddress> {
     store()
         .read()
@@ -71,20 +77,94 @@ pub fn lookup_handle(name: impl AsRef<str>) -> Option<ChildHandle> {
         .cloned()
 }
 
-/// Remove a named registration.
+/// Remove a named registration (local only).
 pub fn unregister_named(name: impl AsRef<str>) {
     let name = name.as_ref();
     let mut store = store().write().unwrap_or_else(|p| p.into_inner());
-    store.addresses.remove(name);
-    store.handles.remove(name);
+    if let Some(address) = store.addresses.remove(name) {
+        store.handles.remove(name);
+        super::registry_sync::publish(RegistryEvent::Unregister {
+            name: name.to_string(),
+            address,
+        });
+    }
 }
 
 /// Remove all names pointing at a local actor id (called on actor exit).
 pub(crate) fn remove_by_actor_id(id: ActorId) {
     let address = ActorAddress::local(id);
     let mut store = store().write().unwrap_or_else(|p| p.into_inner());
-    store.addresses.retain(|_, addr| addr != &address);
-    store.handles.retain(|_, handle| handle.id() != id);
+    let names: Vec<_> = store
+        .handles
+        .iter()
+        .filter(|(_, h)| h.id() == id)
+        .map(|(n, _)| n.clone())
+        .collect();
+    for name in names {
+        store.addresses.remove(&name);
+        store.handles.remove(&name);
+        super::registry_sync::publish(RegistryEvent::Unregister {
+            name,
+            address: address.clone(),
+        });
+    }
+}
+
+/// Locally-owned `(name, address)` pairs for registry snapshot sync.
+pub fn local_snapshot() -> Vec<(String, ActorAddress)> {
+    let store = store().read().unwrap_or_else(|p| p.into_inner());
+    store
+        .handles
+        .keys()
+        .filter_map(|name| {
+            store
+                .addresses
+                .get(name)
+                .map(|addr| (name.clone(), addr.clone()))
+        })
+        .collect()
+}
+
+/// Apply an inbound registry event from a remote peer.
+pub fn apply_remote_event(event: RegistryEvent) -> Result<(), spawned_cluster::TransportError> {
+    match event {
+        RegistryEvent::Register { name, address } => {
+            let mut store = store().write().unwrap_or_else(|p| p.into_inner());
+            if store.handles.contains_key(&name) {
+                tracing::debug!(%name, "ignoring remote register — owned locally");
+                return Ok(());
+            }
+            if let Some(existing) = store.addresses.get(&name) {
+                if existing != &address {
+                    tracing::warn!(
+                        %name,
+                        ?existing,
+                        ?address,
+                        "registry conflict — keeping existing entry"
+                    );
+                    return Ok(());
+                }
+            }
+            store.addresses.insert(name, address);
+            Ok(())
+        }
+        RegistryEvent::Unregister { name, address } => {
+            let mut store = store().write().unwrap_or_else(|p| p.into_inner());
+            if store.handles.contains_key(&name) {
+                return Ok(());
+            }
+            if store.addresses.get(&name) == Some(&address) {
+                store.addresses.remove(&name);
+            }
+            Ok(())
+        }
+        RegistryEvent::Snapshot { entries } => {
+            for (name, address) in entries {
+                let _ = apply_remote_event(RegistryEvent::Register { name, address });
+            }
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -148,5 +228,18 @@ mod tests {
         register_named(&name, dummy_handle()).unwrap();
         unregister_named(&name);
         assert!(lookup_address(&name).is_none());
+    }
+
+    #[test]
+    fn remote_register_is_lookupable() {
+        let name = unique_name("remote");
+        let addr = ActorAddress::on("peer@host".into(), ActorId::from_raw(42));
+        apply_remote_event(RegistryEvent::Register {
+            name: name.clone(),
+            address: addr.clone(),
+        })
+        .unwrap();
+        assert_eq!(lookup_address(&name), Some(addr));
+        assert!(lookup_handle(&name).is_none());
     }
 }

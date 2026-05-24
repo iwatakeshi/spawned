@@ -1,4 +1,4 @@
-//! Cluster node bootstrap (Phase 8d).
+//! Cluster node bootstrap (Phase 8d + 10.1 federated registry).
 //!
 //! [`NodeBuilder`] wires TCP listen/transport, installs the global
 //! [`ClusterRouter`], and optionally registers OS signal shutdown.
@@ -10,8 +10,8 @@ use crate::shutdown_signal::SignalGuard;
 use crate::RemoteMessage;
 use spawned_address::{local_node, set_local_node_for_test, ActorAddress, NodeId};
 use spawned_cluster::{
-    AddressDispatch, ClusterRouter, TcpClusterListener, TcpTransport, Transport, TransportError,
-    UnavailableTransport,
+    AddressDispatch, ClusterRouter, RegistryHooks, TcpClusterListener, TcpTransport, Transport,
+    TransportError, UnavailableTransport,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -30,6 +30,7 @@ pub enum NodeError {
 pub struct Node {
     local_node: NodeId,
     router: Arc<ClusterRouter>,
+    tcp: Option<Arc<TcpTransport>>,
     listener: Option<TcpClusterListener>,
     dispatch: Arc<AddressDispatch>,
     _signal_guards: Vec<SignalGuard>,
@@ -86,6 +87,14 @@ impl Node {
     pub fn shutdown(self) {
         drop(self);
     }
+
+    /// Exchange registry snapshots with all configured peers.
+    pub fn sync_registry(&self) -> Result<(), TransportError> {
+        if let Some(tcp) = &self.tcp {
+            tcp.sync_peers()?;
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Node {
@@ -141,21 +150,52 @@ impl NodeBuilder {
 
         let local = local_node();
         let dispatch = Arc::new(AddressDispatch::new());
+        let federated = self.listen.is_some() || !self.peers.is_empty();
 
-        let transport: Arc<dyn Transport> = if self.peers.is_empty() {
-            Arc::new(UnavailableTransport)
+        let registry_hooks = if federated {
+            RegistryHooks::from_fns(
+                Arc::new(|event| super::named_registry::apply_remote_event(event)),
+                Arc::new(super::named_registry::local_snapshot),
+            )
         } else {
-            Arc::new(TcpTransport::new(local.clone(), self.peers))
+            RegistryHooks::none()
+        };
+
+        let tcp: Option<Arc<TcpTransport>> = if self.peers.is_empty() {
+            None
+        } else {
+            Some(Arc::new(
+                TcpTransport::new(local.clone(), self.peers.clone()).with_registry_hooks(
+                    Arc::new(|event| super::named_registry::apply_remote_event(event)),
+                    Arc::new(super::named_registry::local_snapshot),
+                ),
+            ))
+        };
+
+        if let Some(tcp) = &tcp {
+            if federated {
+                let tcp_publish = tcp.clone();
+                super::registry_sync::install(move |event| {
+                    let _ = tcp_publish.broadcast_registry(event);
+                });
+            }
+        }
+
+        let transport: Arc<dyn Transport> = if let Some(tcp) = tcp.clone() {
+            tcp
+        } else {
+            Arc::new(UnavailableTransport)
         };
 
         let router = Arc::new(ClusterRouter::new(transport));
         let _ = ClusterRouter::set_global(router.clone());
 
         let listener = if let Some(addr) = self.listen {
-            Some(TcpClusterListener::bind(
+            Some(TcpClusterListener::bind_with_registry(
                 addr,
                 local.clone(),
                 dispatch.clone(),
+                registry_hooks,
             )?)
         } else {
             None
@@ -171,6 +211,7 @@ impl NodeBuilder {
         Ok(Node {
             local_node: local,
             router,
+            tcp,
             listener,
             dispatch,
             _signal_guards,

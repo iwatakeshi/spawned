@@ -1,7 +1,7 @@
-use spawned_address::NodeId;
+use spawned_address::{ActorAddress, NodeId};
 
 /// Wire protocol version for TCP handshake.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Initial handshake exchanged after TCP connect.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -19,6 +19,30 @@ impl Handshake {
     }
 }
 
+/// Control-plane registry replication event (Phase 10.1).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RegistryEvent {
+    Register {
+        name: String,
+        address: ActorAddress,
+    },
+    Unregister {
+        name: String,
+        address: ActorAddress,
+    },
+    /// Full snapshot of a peer's locally-owned registrations.
+    Snapshot {
+        entries: Vec<(String, ActorAddress)>,
+    },
+}
+
+/// Top-level TCP frame after handshake (actor data plane or registry control plane).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ClusterFrame {
+    Actor(spawned_wire::WireEnvelope),
+    Registry(RegistryEvent),
+}
+
 /// Response to a correlated request envelope.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WireReply {
@@ -31,6 +55,14 @@ pub fn encode_handshake(handshake: &Handshake) -> Result<Vec<u8>, spawned_wire::
 }
 
 pub fn decode_handshake(bytes: &[u8]) -> Result<Handshake, spawned_wire::WireError> {
+    postcard::from_bytes(bytes).map_err(|e| spawned_wire::WireError::Decode(e.to_string()))
+}
+
+pub fn encode_cluster_frame(frame: &ClusterFrame) -> Result<Vec<u8>, spawned_wire::WireError> {
+    postcard::to_allocvec(frame).map_err(|e| spawned_wire::WireError::Encode(e.to_string()))
+}
+
+pub fn decode_cluster_frame(bytes: &[u8]) -> Result<ClusterFrame, spawned_wire::WireError> {
     postcard::from_bytes(bytes).map_err(|e| spawned_wire::WireError::Decode(e.to_string()))
 }
 

@@ -6,21 +6,22 @@
 //! # terminal 1 — pong server
 //! cargo run -p cluster_ping_pong -- pong --name pong@127.0.0.1 --listen 127.0.0.1:9101
 //!
-//! # terminal 2 — ping client (use the address printed by pong)
+//! # terminal 2 — ping client
 //! cargo run -p cluster_ping_pong -- ping \
 //!   --name ping@127.0.0.1 \
-//!   --peer pong@127.0.0.1=127.0.0.1:9101 \
-//!   --target 'pong@127.0.0.1#ActorId(2)'
+//!   --peer pong@127.0.0.1=127.0.0.1:9101
 //! ```
 
-use spawned_address::{ActorAddress, ActorId, NodeId};
+use spawned_address::{ActorAddress, NodeId};
 use spawned_concurrency::message::Message;
 use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
-use spawned_concurrency::{remote_message, Node, RemoteActorRef};
+use spawned_concurrency::{lookup_address, register_named, remote_message, Node, RemoteActorRef};
 use spawned_rt::tasks as rt;
 use std::env;
 use std::net::SocketAddr;
 use std::time::Duration;
+
+const PONG_NAME: &str = "pong";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[remote_message]
@@ -52,8 +53,7 @@ fn usage() -> ! {
     eprintln!(
         "Usage:\n  \
          cluster_ping_pong pong --name NAME --listen HOST:PORT\n  \
-         cluster_ping_pong ping --name NAME --peer NAME=HOST:PORT --target ADDRESS\n\n\
-         Target format: node@host#ActorId(N) (printed by the pong process)."
+         cluster_ping_pong ping --name NAME --peer NAME=HOST:PORT\n"
     );
     std::process::exit(1);
 }
@@ -76,25 +76,6 @@ fn parse_peer(s: &str) -> (NodeId, SocketAddr) {
     )
 }
 
-fn parse_target(s: &str) -> ActorAddress {
-    let (node, id_part) = s.split_once('#').unwrap_or_else(|| {
-        eprintln!("invalid --target {s:?}, expected node@host#ActorId(N)");
-        std::process::exit(1);
-    });
-    let id_str = id_part
-        .strip_prefix("ActorId(")
-        .and_then(|rest| rest.strip_suffix(')'))
-        .unwrap_or_else(|| {
-            eprintln!("invalid actor id in target {s:?}");
-            std::process::exit(1);
-        });
-    let raw: u64 = id_str.parse().unwrap_or_else(|_| {
-        eprintln!("invalid actor id number in target {s:?}");
-        std::process::exit(1);
-    });
-    ActorAddress::on(parse_node(node), ActorId::from_raw(raw))
-}
-
 fn main() {
     tracing_subscriber::fmt()
         .with_target(false)
@@ -106,7 +87,6 @@ fn main() {
     let mut name = None;
     let mut listen = None;
     let mut peers = Vec::new();
-    let mut target = None;
 
     let mut arg = args.next();
     while let Some(token) = arg {
@@ -124,7 +104,6 @@ fn main() {
                 );
             }
             "--peer" => peers.push(parse_peer(&args.next().unwrap_or_else(|| usage()))),
-            "--target" => target = Some(parse_target(&args.next().unwrap_or_else(|| usage()))),
             other => {
                 eprintln!("unknown argument {other}");
                 usage();
@@ -136,7 +115,7 @@ fn main() {
     rt::run(async {
         match mode.as_str() {
             "pong" => run_pong(name, listen).await,
-            "ping" => run_ping(name, peers, target).await,
+            "ping" => run_ping(name, peers).await,
             _ => usage(),
         }
     });
@@ -156,27 +135,20 @@ async fn run_pong(name: Option<NodeId>, listen: Option<SocketAddr>) {
 
     let actor = PongActor.start();
     let address = ActorAddress::local(actor.id());
+    register_named(PONG_NAME, actor.child_handle()).expect("register pong");
     node.register_tasks_wire(address.clone(), actor.recipient());
 
     println!("=== Pong node ===");
     println!("Local node: {}", node.local_node());
     println!("Listen:     {}", node.listen_addr().unwrap());
-    println!("Target:     {address}");
+    println!("Registered: {PONG_NAME} -> {address}");
     println!("Waiting for remote pings (Ctrl+C to stop)...\n");
 
     actor.join().await;
     node.shutdown();
 }
 
-async fn run_ping(
-    name: Option<NodeId>,
-    peers: Vec<(NodeId, SocketAddr)>,
-    target: Option<ActorAddress>,
-) {
-    let target = target.unwrap_or_else(|| {
-        eprintln!("ping mode requires --target node@host#ActorId(N)");
-        std::process::exit(1);
-    });
+async fn run_ping(name: Option<NodeId>, peers: Vec<(NodeId, SocketAddr)>) {
     if peers.is_empty() {
         eprintln!("ping mode requires at least one --peer NAME=HOST:PORT");
         std::process::exit(1);
@@ -192,11 +164,17 @@ async fn run_ping(
     let node = builder.build().expect("start ping node");
 
     rt::sleep(Duration::from_millis(200)).await;
+    node.sync_registry().expect("sync federated registry");
+
+    let target = lookup_address(PONG_NAME).unwrap_or_else(|| {
+        eprintln!("name '{PONG_NAME}' not found in federated registry");
+        std::process::exit(1);
+    });
 
     let remote = RemoteActorRef::<Ping>::remote(target.clone(), node.router());
     println!("=== Ping node ===");
     println!("Local node: {}", node.local_node());
-    println!("Target:     {target}\n");
+    println!("Target:     {PONG_NAME} -> {target}\n");
 
     for n in 1..=5 {
         let remote = remote.clone();

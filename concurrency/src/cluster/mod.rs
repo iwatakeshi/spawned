@@ -5,19 +5,23 @@
 
 mod named_registry;
 mod node;
+mod registry_sync;
 mod remote_actor_ref;
 mod wire_dispatch;
 
 pub use named_registry::{
-    lookup_address, lookup_handle, register_named, unregister_named, NamedRegistryError,
+    apply_remote_event, local_snapshot, lookup_address, lookup_handle, register_named,
+    unregister_named, NamedRegistryError,
 };
 pub use node::{Node, NodeBuilder, NodeError};
+pub use registry_sync::install_registry_sync;
 pub use remote_actor_ref::{RemoteActorRef, RemoteRequest};
 pub use wire_dispatch::{tasks_wire_dispatch, threads_wire_dispatch};
 
 pub use spawned_cluster::{
-    AddressDispatch, ClusterRouter, InboundDispatch, TcpClusterListener, TcpTransport, Transport,
-    TransportError, UnavailableTransport, WireReply, PROTOCOL_VERSION,
+    AddressDispatch, ClusterFrame, ClusterRouter, InboundDispatch, RegistryEvent, RegistryHooks,
+    TcpClusterListener, TcpTransport, Transport, TransportError, UnavailableTransport, WireReply,
+    PROTOCOL_VERSION,
 };
 
 pub(crate) fn remove_named_by_actor_id(id: crate::child_handle::ActorId) {

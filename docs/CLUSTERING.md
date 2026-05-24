@@ -91,6 +91,27 @@ node.register_tasks_wire(ActorAddress::local(actor.id()), actor.recipient());
 
 For signal-only bootstrap (no cluster TCP), omit `listen` / `peer` — see `examples/http_workers`.
 
+### Phase 10.1: Federated registry
+
+When a [`Node`] has `listen` and/or `peer` configured, `register_named` replicates across the cluster:
+
+```rust
+use spawned_concurrency::{register_named, lookup_address, Node, RemoteActorRef};
+
+// Server
+register_named("pong", actor.child_handle())?;
+node.register_tasks_wire(ActorAddress::local(actor.id()), actor.recipient());
+
+// Client (after Node::sync_registry())
+let addr = lookup_address("pong").expect("federated name");
+let remote = RemoteActorRef::<Ping>::remote(addr, node.router());
+```
+
+- Control plane: `RegistryEvent` (`Register`, `Unregister`, `Snapshot`) over TCP
+- Actor data plane unchanged: `ClusterFrame::Actor(WireEnvelope)`
+- `lookup_handle` remains local-only; use `lookup_address` + `RemoteActorRef` for remote actors
+- Example: `examples/cluster_ping_pong` (ping discovers pong by name)
+
 ## Phase 8c: TCP transport
 
 - **Length-framed TCP** — u32 big-endian + postcard payload; handshake (`PROTOCOL_VERSION`, `NodeId`)
@@ -137,6 +158,8 @@ remote.send(Ping { n: 1 })?;
 | **8c** | TCP transport + two-node test |
 | **8d** | `Node` bootstrap (this document) |
 | **9** | Cluster-safe parity: backoff, pg scopes, pools, unified ChildSpec |
-| **10** | Federated registry, distributed pg, libp2p transport |
+| **10.1** | Federated registry (this document) |
+| **10.2** | Distributed pg |
+| **10.3** | libp2p transport |
 
 See [ROADMAP.md](ROADMAP.md) for full detail.

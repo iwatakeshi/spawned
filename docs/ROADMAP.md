@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after Phase 9.7 (supervisor ↔ pg auto-join).
+**Last updated:** after Phase 10.1 (federated registry).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -101,6 +101,7 @@ Erlang/Ractor-style named actor sets for broadcast and dispatch on a **single no
 |------|-------|
 | **Group monitors** | No `monitor` / `demonitor` for membership change notifications (Ractor-style) |
 | **Distributed pg** | No cross-node membership; `get_local_members` is identical to `get_members` on one node |
+| **Federated registry** | ✅ Shipped in Phase 10.1 — `register_named` replicates via TCP control plane |
 | **Supervisor integration** | ✅ Auto-join via `ChildSpec::with_pg_group` (Phase 9.7); `ActorPool` applies pool group by default |
 
 ## Phase 5: Documentation & Polish — ongoing
@@ -248,9 +249,20 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 - `ActorPool::start` auto-applies the pool group when the spec has no pg membership
 - Restarts re-join via the same start path
 
+### 10.1. Federated registry — shipped
+
+- `RegistryEvent` control plane on TCP (`ClusterFrame::Registry` vs `ClusterFrame::Actor`)
+- `register_named` / `unregister_named` replicate to peers; snapshot sync on connect
+- `Node::sync_registry()` exchanges snapshots with configured peers
+- `lookup_address(name)` returns local or federated remote [`ActorAddress`]
+- `examples/cluster_ping_pong` uses name-based discovery (`register_named("pong")`)
+- Integration test: `cluster/tests/registry_two_node.rs`
+- Wire protocol version bumped to **2**
+
 | Phase | Focus |
 |-------|--------|
-| **10** | Federated registry, distributed pg, libp2p transport |
+| **10.2** | Distributed pg |
+| **10.3** | libp2p transport |
 
 ## Future Considerations
 
@@ -262,7 +274,7 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 | State machines (`gen_statem`) | Protocol implementations |
 | Backoff strategies | ✅ Shipped in Phase 9.1 (`RestartBackoff` on `ChildSpec`) |
 | Persistence / event sourcing | Akka Persistence pattern |
-| Clustering / distribution | Phase 8 in progress — see [CLUSTERING.md](CLUSTERING.md) |
+| Clustering / distribution | Phase 8–10 in progress — see [CLUSTERING.md](CLUSTERING.md) |
 | Built-in observability | Message latency (mailbox depth shipped in 6c) |
 | Custom runtime | Purpose-built actor runtime |
 
