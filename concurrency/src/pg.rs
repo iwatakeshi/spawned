@@ -64,8 +64,13 @@ struct Member {
     joins: u32,
 }
 
+struct RemoteMember {
+    joins: u32,
+}
+
 struct PgStore {
     groups: HashMap<GroupKey, HashMap<ActorAddress, Member>>,
+    remote: HashMap<GroupKey, HashMap<ActorAddress, RemoteMember>>,
     index: HashMap<ActorAddress, HashSet<GroupKey>>,
     typed: HashMap<(GroupKey, TypeId), Box<dyn TypedBucket + Send + Sync>>,
 }
@@ -111,10 +116,11 @@ impl PgStore {
             for key in groups {
                 if let Some(members) = self.groups.get_mut(&key) {
                     members.remove(&address);
-                    if members.is_empty() {
-                        self.groups.remove(&key);
-                    }
                 }
+                if let Some(remote) = self.remote.get_mut(&key) {
+                    remote.remove(&address);
+                }
+                self.remove_group_if_empty(&key);
             }
         }
         for bucket in self.typed.values_mut() {
@@ -124,8 +130,11 @@ impl PgStore {
     }
 
     fn remove_group_if_empty(&mut self, key: &GroupKey) {
-        if self.groups.get(key).is_some_and(|m| m.is_empty()) {
+        let local_empty = self.groups.get(key).is_none_or(|m| m.is_empty());
+        let remote_empty = self.remote.get(key).is_none_or(|m| m.is_empty());
+        if local_empty && remote_empty {
             self.groups.remove(key);
+            self.remote.remove(key);
             self.index
                 .values_mut()
                 .for_each(|groups| _ = groups.remove(key));
@@ -137,7 +146,18 @@ impl PgStore {
                     !bucket.is_empty()
                 }
             });
+        } else if local_empty {
+            self.groups.remove(key);
+        } else if remote_empty {
+            self.remote.remove(key);
         }
+    }
+
+    fn remove_remote_if_empty(&mut self, key: &GroupKey) {
+        if self.remote.get(key).is_some_and(|m| m.is_empty()) {
+            self.remote.remove(key);
+        }
+        self.remove_group_if_empty(key);
     }
 }
 
@@ -146,6 +166,7 @@ fn store() -> &'static RwLock<PgStore> {
     STORE.get_or_init(|| {
         RwLock::new(PgStore {
             groups: HashMap::new(),
+            remote: HashMap::new(),
             index: HashMap::new(),
             typed: HashMap::new(),
         })
@@ -219,7 +240,14 @@ pub fn join_scoped(scope: impl AsRef<str>, group: impl AsRef<str>, handle: Child
         .and_modify(|member| member.joins += 1)
         .or_insert(Member { handle, joins: 1 });
 
-    store.index.entry(address).or_default().insert(key);
+    store.index.entry(address.clone()).or_default().insert(key.clone());
+
+    #[cfg(feature = "cluster")]
+    crate::cluster::publish_pg_event(spawned_cluster::PgEvent::Join {
+        scope: key.scope.clone(),
+        group: key.group.clone(),
+        address,
+    });
 }
 
 /// Leave a group once in the default scope (decrement join count).
@@ -263,14 +291,47 @@ pub fn leave_scoped(
             }
         }
         store.typed.retain(|_, bucket| !bucket.is_empty());
+
+        #[cfg(feature = "cluster")]
+        crate::cluster::publish_pg_event(spawned_cluster::PgEvent::Leave {
+            scope: scope_name.clone(),
+            group: group_name.clone(),
+            address,
+        });
     }
 
     Ok(())
 }
 
+/// Returns all member addresses in a scoped group (local + federated remote).
+pub fn member_addresses_scoped(scope: impl AsRef<str>, group: impl AsRef<str>) -> Vec<ActorAddress> {
+    let key = GroupKey::new(scope, group);
+    let mut store = store().write().unwrap_or_else(|p| p.into_inner());
+
+    if let Some(members) = store.groups.get_mut(&key) {
+        members.retain(|_, member| member.handle.is_alive());
+        if members.is_empty() {
+            store.groups.remove(&key);
+        }
+    }
+
+    let mut out = Vec::new();
+    if let Some(members) = store.groups.get(&key) {
+        out.extend(members.keys().cloned());
+    }
+    if let Some(remote) = store.remote.get(&key) {
+        out.extend(remote.keys().cloned());
+    }
+    store.remove_group_if_empty(&key);
+    out
+}
+
+/// Returns all member addresses in the default scope (local + federated remote).
+pub fn member_addresses(group: impl AsRef<str>) -> Vec<ActorAddress> {
+    member_addresses_scoped(DEFAULT_SCOPE, group)
+}
+
 /// Returns all members of a group in the default scope (including dead actors until pruned).
-///
-/// Dead actors are removed lazily on read.
 pub fn get_members(group: impl AsRef<str>) -> Vec<ChildHandle> {
     get_members_scoped(DEFAULT_SCOPE, group)
 }
@@ -367,12 +428,124 @@ pub(crate) fn typed_members<T: Clone + Send + Sync + 'static>(
 
 /// Remove an actor from all groups. Called automatically when an actor exits.
 pub(crate) fn remove_actor(id: ActorId) {
+    let address = local_address(id);
+    #[cfg(feature = "cluster")]
+    let leaves: Vec<(String, String)> = {
+        let store = store().read().unwrap_or_else(|p| p.into_inner());
+        store
+            .index
+            .get(&address)
+            .into_iter()
+            .flat_map(|groups| groups.iter())
+            .map(|key| (key.scope.clone(), key.group.clone()))
+            .collect()
+    };
+
     store()
         .write()
         .unwrap_or_else(|p| p.into_inner())
-        .remove_actor(local_address(id));
+        .remove_actor(address.clone());
+
     #[cfg(feature = "cluster")]
-    crate::cluster::remove_named_by_actor_id(id);
+    {
+        for (scope, group) in leaves {
+            crate::cluster::publish_pg_event(spawned_cluster::PgEvent::Leave {
+                scope,
+                group,
+                address: address.clone(),
+            });
+        }
+        crate::cluster::remove_named_by_actor_id(id);
+    }
+
+    #[cfg(not(feature = "cluster"))]
+    let _ = id;
+}
+
+/// Locally-owned pg memberships for federated snapshot sync.
+#[cfg(feature = "cluster")]
+pub fn local_pg_snapshot() -> Vec<spawned_cluster::PgMemberEntry> {
+    let store = store().read().unwrap_or_else(|p| p.into_inner());
+    store
+        .groups
+        .iter()
+        .flat_map(|(key, members)| {
+            members.keys().map(|address| spawned_cluster::PgMemberEntry {
+                scope: key.scope.clone(),
+                group: key.group.clone(),
+                address: address.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Apply an inbound pg event from a remote peer.
+#[cfg(feature = "cluster")]
+pub fn apply_remote_pg_event(
+    event: spawned_cluster::PgEvent,
+) -> Result<(), spawned_cluster::TransportError> {
+    use spawned_cluster::PgEvent;
+
+    match event {
+        PgEvent::Join {
+            scope,
+            group,
+            address,
+        } => {
+            if address.is_local() {
+                tracing::debug!(
+                    scope = %scope,
+                    group = %group,
+                    ?address,
+                    "ignoring remote pg join — owned locally"
+                );
+                return Ok(());
+            }
+            let key = GroupKey::new(&scope, &group);
+            let mut store = store().write().unwrap_or_else(|p| p.into_inner());
+            store
+                .remote
+                .entry(key)
+                .or_default()
+                .entry(address)
+                .and_modify(|member| member.joins += 1)
+                .or_insert(RemoteMember { joins: 1 });
+            Ok(())
+        }
+        PgEvent::Leave {
+            scope,
+            group,
+            address,
+        } => {
+            if address.is_local() {
+                return Ok(());
+            }
+            let key = GroupKey::new(&scope, &group);
+            let mut store = store().write().unwrap_or_else(|p| p.into_inner());
+            let Some(members) = store.remote.get_mut(&key) else {
+                return Ok(());
+            };
+            let Some(member) = members.get_mut(&address) else {
+                return Ok(());
+            };
+            member.joins = member.joins.saturating_sub(1);
+            if member.joins == 0 {
+                members.remove(&address);
+            }
+            store.remove_remote_if_empty(&key);
+            Ok(())
+        }
+        PgEvent::Snapshot { entries } => {
+            for entry in entries {
+                apply_remote_pg_event(PgEvent::Join {
+                    scope: entry.scope,
+                    group: entry.group,
+                    address: entry.address,
+                })?;
+            }
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

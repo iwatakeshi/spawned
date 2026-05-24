@@ -70,16 +70,6 @@ pub(crate) fn encode_registry_event(event: &RegistryEvent) -> Result<Vec<u8>, Tr
     encode_cluster_frame(&ClusterFrame::Registry(event.clone())).map_err(TransportError::from)
 }
 
-pub(crate) fn send_snapshot(
-    stream: &mut std::net::TcpStream,
-    snapshot: &dyn RegistrySnapshot,
-) -> Result<(), TransportError> {
-    let entries = snapshot.local_entries();
-    let event = RegistryEvent::Snapshot { entries };
-    let bytes = encode_registry_event(&event)?;
-    crate::frame::write_frame(stream, &bytes)
-}
-
 pub(crate) fn apply_registry_event(
     hooks: &RegistryHooks,
     event: RegistryEvent,

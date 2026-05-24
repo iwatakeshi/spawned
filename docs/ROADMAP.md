@@ -100,7 +100,7 @@ Erlang/Ractor-style named actor sets for broadcast and dispatch on a **single no
 | Item | Notes |
 |------|-------|
 | **Group monitors** | No `monitor` / `demonitor` for membership change notifications (Ractor-style) |
-| **Distributed pg** | No cross-node membership; `get_local_members` is identical to `get_members` on one node |
+| **Distributed pg** | ✅ Shipped in Phase 10.2 — `PgEvent` control plane, `member_addresses`, `cast_federated` / `call_federated` |
 | **Federated registry** | ✅ Shipped in Phase 10.1 — `register_named` replicates via TCP control plane |
 | **Supervisor integration** | ✅ Auto-join via `ChildSpec::with_pg_group` (Phase 9.7); `ActorPool` applies pool group by default |
 
@@ -259,9 +259,18 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 - Integration test: `cluster/tests/registry_two_node.rs`
 - Wire protocol version bumped to **2**
 
+### 10.2. Distributed pg — shipped
+
+- `PgEvent` control plane on TCP (`ClusterFrame::Pg`) alongside registry snapshots
+- Local `join` / `leave` publish to peers; remote memberships stored in a federated map
+- `member_addresses` / `member_addresses_scoped` — cluster-wide membership (local + remote)
+- `cast_federated` / `call_federated` — broadcast to local and remote members via `RemoteActorRef`
+- `ActorPool::dispatch_federated` — pool routing includes remote members (depth 0)
+- `NodeBuilder` wires `ControlPlaneHooks` for registry + pg replication
+- Integration test: `cluster/tests/pg_two_node.rs`
+
 | Phase | Focus |
 |-------|--------|
-| **10.2** | Distributed pg |
 | **10.3** | libp2p transport |
 
 ## Future Considerations
@@ -287,7 +296,7 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 | Meltdown protection | ✅ Shipped |
 | Dynamic supervisor (OneForOne pools) | ✅ Shipped ([#134](https://github.com/lambdaclass/spawned/issues/134)) |
 | Process groups (local) | ✅ Shipped (MVP) |
-| Process groups (distributed) | ❌ Deferred |
+| Process groups (distributed) | ✅ Shipped in Phase 10.2 |
 | Distributed actors | ❌ Not started |
 
 ## References

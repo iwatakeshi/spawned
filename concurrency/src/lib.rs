@@ -66,7 +66,7 @@ pub use error::{ActorError, ExitReason};
 pub use link::Exit;
 pub use mailbox::{BackpressureMode, MailboxConfig};
 pub use monitor::{Down, MonitorRef};
-pub use pg::{PgCallReport, PgError, PgSendReport, DEFAULT_SCOPE};
+pub use pg::{PgCallReport, PgError, PgSendReport, DEFAULT_SCOPE, member_addresses, member_addresses_scoped};
 pub use pool::{PoolDispatcher, PoolError, PoolStrategy};
 pub use response::Response;
 pub use shutdown_signal::{
@@ -79,9 +79,10 @@ pub use supervisor::SupervisorStrategy;
 
 #[cfg(feature = "cluster")]
 pub use cluster::{
-    lookup_address, lookup_handle, register_named, unregister_named, tasks_wire_dispatch,
-    threads_wire_dispatch, ClusterRouter, InboundDispatch, NamedRegistryError, Node, NodeBuilder,
-    NodeError, RemoteActorRef, RemoteRequest, TcpClusterListener, TcpTransport, Transport,
+    apply_remote_pg_event, install_pg_sync, local_pg_snapshot, lookup_address, lookup_handle,
+    register_named, unregister_named, tasks_wire_dispatch, threads_wire_dispatch, ClusterRouter,
+    ControlPlaneHooks, InboundDispatch, NamedRegistryError, Node, NodeBuilder, NodeError, PgEvent,
+    PgMemberEntry, RemoteActorRef, RemoteRequest, TcpClusterListener, TcpTransport, Transport,
     TransportError, UnavailableTransport, WireReply, PROTOCOL_VERSION,
 };
 

@@ -6,6 +6,9 @@ use crate::pool::{PoolDispatcher, PoolError, PoolStrategy};
 use crate::threads::child_spec::ChildSpec;
 use crate::threads::pg;
 use crate::threads::{Actor, ActorRef, DynamicSupervisor, DynamicSupervisorApi, Handler};
+#[cfg(feature = "cluster")]
+use crate::{cluster::RemoteActorRef, RemoteMessage};
+use spawned_address::ActorAddress;
 
 /// A supervised worker pool: `DynamicSupervisor` + pg group + routed dispatch.
 pub struct ActorPool {
@@ -22,20 +25,66 @@ pub struct ActorPoolBuilder {
     scope: Option<String>,
 }
 
+fn select_local_target<A: Actor>(
+    dispatcher: &PoolDispatcher,
+) -> Result<ActorRef<A>, PoolError> {
+    let members = pg::members_scoped::<A>(&dispatcher.scope, &dispatcher.group);
+    if members.is_empty() {
+        return Err(PoolError::NoMembers);
+    }
+    let depths: Vec<usize> = members.iter().map(|m| m.mailbox_depth()).collect();
+    let idx = dispatcher
+        .select_index(&depths)
+        .expect("non-empty members implies Some index");
+    Ok(members[idx].clone())
+}
+
+#[cfg(feature = "cluster")]
+enum FederatedTarget<A: Actor> {
+    Local(ActorRef<A>),
+    Remote(ActorAddress),
+}
+
+#[cfg(feature = "cluster")]
+fn select_federated_target<A: Actor>(
+    dispatcher: &PoolDispatcher,
+) -> Result<FederatedTarget<A>, PoolError> {
+    let members = pg::members_scoped::<A>(&dispatcher.scope, &dispatcher.group);
+    let mut depths: Vec<usize> = members.iter().map(|m| m.mailbox_depth()).collect();
+    let remote_addrs: Vec<ActorAddress> = crate::pg::member_addresses_scoped(
+        &dispatcher.scope,
+        &dispatcher.group,
+    )
+    .into_iter()
+    .filter(|address| !address.is_local())
+    .collect();
+    depths.extend(std::iter::repeat_n(0, remote_addrs.len()));
+
+    if depths.is_empty() {
+        return Err(PoolError::NoMembers);
+    }
+
+    let idx = dispatcher
+        .select_index(&depths)
+        .expect("non-empty depths implies Some index");
+
+    if idx < members.len() {
+        Ok(FederatedTarget::Local(members[idx].clone()))
+    } else {
+        Ok(FederatedTarget::Remote(
+            remote_addrs[idx - members.len()].clone(),
+        ))
+    }
+}
+
 pub fn dispatch<A, M>(dispatcher: &PoolDispatcher, msg: M) -> Result<(), PoolError>
 where
     A: Actor + Handler<M>,
     M: Message,
 {
-    let members = pg::members_scoped::<A>(&dispatcher.scope, &dispatcher.group);
-    if members.is_empty() {
-        return Err(PoolError::NoMembers);
-    }
-    let depths: Vec<_> = members.iter().map(|m| m.mailbox_depth()).collect();
-    let idx = dispatcher
-        .select_index(&depths)
-        .expect("non-empty members implies Some index");
-    members[idx].send(msg).map_err(PoolError::from)
+    select_local_target::<A>(dispatcher)?
+        .send(msg)
+        .map_err(PoolError::from)
 }
 
 pub fn call_one<A, M>(dispatcher: &PoolDispatcher, msg: M) -> Result<M::Result, PoolError>
@@ -43,15 +92,51 @@ where
     A: Actor + Handler<M>,
     M: Message + Clone,
 {
-    let members = pg::members_scoped::<A>(&dispatcher.scope, &dispatcher.group);
-    if members.is_empty() {
-        return Err(PoolError::NoMembers);
+    select_local_target::<A>(dispatcher)?
+        .request(msg)
+        .map_err(PoolError::from)
+}
+
+#[cfg(feature = "cluster")]
+pub fn dispatch_federated<A, M>(dispatcher: &PoolDispatcher, msg: M) -> Result<(), PoolError>
+where
+    A: Actor + Handler<M>,
+    M: Message + RemoteMessage,
+{
+    match select_federated_target::<A>(dispatcher)? {
+        FederatedTarget::Local(member) => member.send(msg).map_err(PoolError::from),
+        FederatedTarget::Remote(address) => {
+            RemoteActorRef::<M>::remote_global(address)
+                .send(msg)
+                .map_err(PoolError::from)
+        }
     }
-    let depths: Vec<_> = members.iter().map(|m| m.mailbox_depth()).collect();
-    let idx = dispatcher
-        .select_index(&depths)
-        .expect("non-empty members implies Some index");
-    members[idx].request(msg).map_err(PoolError::from)
+}
+
+#[cfg(feature = "cluster")]
+pub fn call_one_federated<A, M>(
+    dispatcher: &PoolDispatcher,
+    msg: M,
+) -> Result<M::Result, PoolError>
+where
+    A: Actor + Handler<M>,
+    M: Message + Clone + RemoteMessage,
+    M::Result: for<'de> serde::Deserialize<'de> + Send,
+{
+    use crate::cluster::RemoteRequest;
+
+    match select_federated_target::<A>(dispatcher)? {
+        FederatedTarget::Local(member) => member.request(msg).map_err(PoolError::from),
+        FederatedTarget::Remote(address) => match RemoteActorRef::<M>::remote_global(address)
+            .request_raw(msg)?
+        {
+            RemoteRequest::Remote(payload) => spawned_wire::decode_reply(&payload)
+                .map_err(|_| PoolError::from(crate::error::ActorError::RemoteUnreachable)),
+            RemoteRequest::Local(_) => {
+                Err(PoolError::from(crate::error::ActorError::RemoteUnreachable))
+            }
+        },
+    }
 }
 
 impl ActorPool {
@@ -89,6 +174,25 @@ impl ActorPool {
         M: Message + Clone,
     {
         call_one::<A, M>(&self.dispatcher, msg)
+    }
+
+    #[cfg(feature = "cluster")]
+    pub fn dispatch_federated<A, M>(&self, msg: M) -> Result<(), PoolError>
+    where
+        A: Actor + Handler<M>,
+        M: Message + RemoteMessage,
+    {
+        dispatch_federated::<A, M>(&self.dispatcher, msg)
+    }
+
+    #[cfg(feature = "cluster")]
+    pub fn call_one_federated<A, M>(&self, msg: M) -> Result<M::Result, PoolError>
+    where
+        A: Actor + Handler<M>,
+        M: Message + Clone + RemoteMessage,
+        M::Result: for<'de> serde::Deserialize<'de> + Send,
+    {
+        call_one_federated::<A, M>(&self.dispatcher, msg)
     }
 }
 

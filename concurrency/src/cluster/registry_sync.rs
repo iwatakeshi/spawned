@@ -38,11 +38,16 @@ mod tests {
     fn publish_calls_installed_hook() {
         let count = Arc::new(AtomicUsize::new(0));
         let count_for_hook = count.clone();
-        install(move |_event| {
-            count_for_hook.fetch_add(1, Ordering::Relaxed);
+        install(move |event| {
+            if matches!(
+                event,
+                RegistryEvent::Unregister { ref name, .. } if name == "registry_sync_test_only"
+            ) {
+                count_for_hook.fetch_add(1, Ordering::Relaxed);
+            }
         });
         publish(RegistryEvent::Unregister {
-            name: "x".into(),
+            name: "registry_sync_test_only".into(),
             address: ActorAddress::local(ActorId::from_raw(1)),
         });
         assert_eq!(count.load(Ordering::Relaxed), 1);

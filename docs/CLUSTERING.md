@@ -159,7 +159,7 @@ remote.send(Ping { n: 1 })?;
 | **8d** | `Node` bootstrap (this document) |
 | **9** | Cluster-safe parity: backoff, pg scopes, pools, unified ChildSpec |
 | **10.1** | Federated registry (this document) |
-| **10.2** | Distributed pg |
+| **10.2** | Distributed pg (this document) |
 | **10.3** | libp2p transport |
 
 See [ROADMAP.md](ROADMAP.md) for full detail.

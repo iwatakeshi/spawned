@@ -10,7 +10,7 @@ use crate::shutdown_signal::SignalGuard;
 use crate::RemoteMessage;
 use spawned_address::{local_node, set_local_node_for_test, ActorAddress, NodeId};
 use spawned_cluster::{
-    AddressDispatch, ClusterRouter, RegistryHooks, TcpClusterListener, TcpTransport, Transport,
+    AddressDispatch, ClusterRouter, ControlPlaneHooks, TcpClusterListener, TcpTransport, Transport,
     TransportError, UnavailableTransport,
 };
 use std::collections::HashMap;
@@ -152,31 +152,35 @@ impl NodeBuilder {
         let dispatch = Arc::new(AddressDispatch::new());
         let federated = self.listen.is_some() || !self.peers.is_empty();
 
-        let registry_hooks = if federated {
-            RegistryHooks::from_fns(
+        let control = if federated {
+            ControlPlaneHooks::federated(
                 Arc::new(|event| super::named_registry::apply_remote_event(event)),
                 Arc::new(super::named_registry::local_snapshot),
+                Arc::new(|event| crate::pg::apply_remote_pg_event(event)),
+                Arc::new(crate::pg::local_pg_snapshot),
             )
         } else {
-            RegistryHooks::none()
+            ControlPlaneHooks::none()
         };
 
         let tcp: Option<Arc<TcpTransport>> = if self.peers.is_empty() {
             None
         } else {
             Some(Arc::new(
-                TcpTransport::new(local.clone(), self.peers.clone()).with_registry_hooks(
-                    Arc::new(|event| super::named_registry::apply_remote_event(event)),
-                    Arc::new(super::named_registry::local_snapshot),
-                ),
+                TcpTransport::new(local.clone(), self.peers.clone())
+                    .with_control_plane_hooks(control.clone()),
             ))
         };
 
         if let Some(tcp) = &tcp {
             if federated {
-                let tcp_publish = tcp.clone();
+                let tcp_registry = tcp.clone();
                 super::registry_sync::install(move |event| {
-                    let _ = tcp_publish.broadcast_registry(event);
+                    let _ = tcp_registry.broadcast_registry(event);
+                });
+                let tcp_pg = tcp.clone();
+                super::pg_sync::install(move |event| {
+                    let _ = tcp_pg.broadcast_pg(event);
                 });
             }
         }
@@ -191,11 +195,11 @@ impl NodeBuilder {
         let _ = ClusterRouter::set_global(router.clone());
 
         let listener = if let Some(addr) = self.listen {
-            Some(TcpClusterListener::bind_with_registry(
+            Some(TcpClusterListener::bind_with_control_plane(
                 addr,
                 local.clone(),
                 dispatch.clone(),
-                registry_hooks,
+                control,
             )?)
         } else {
             None

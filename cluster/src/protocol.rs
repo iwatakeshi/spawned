@@ -36,11 +36,39 @@ pub enum RegistryEvent {
     },
 }
 
-/// Top-level TCP frame after handshake (actor data plane or registry control plane).
+/// Control-plane process group replication event (Phase 10.2).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PgEvent {
+    Join {
+        scope: String,
+        group: String,
+        address: ActorAddress,
+    },
+    Leave {
+        scope: String,
+        group: String,
+        address: ActorAddress,
+    },
+    /// Full snapshot of a peer's locally-owned pg memberships.
+    Snapshot {
+        entries: Vec<PgMemberEntry>,
+    },
+}
+
+/// One pg membership entry in a federated snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PgMemberEntry {
+    pub scope: String,
+    pub group: String,
+    pub address: ActorAddress,
+}
+
+/// Top-level TCP frame after handshake (actor data plane or control plane).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ClusterFrame {
     Actor(spawned_wire::WireEnvelope),
     Registry(RegistryEvent),
+    Pg(PgEvent),
 }
 
 /// Response to a correlated request envelope.
