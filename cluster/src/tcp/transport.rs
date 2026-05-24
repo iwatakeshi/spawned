@@ -6,12 +6,12 @@ use crate::protocol::{
     encode_handshake, ClusterFrame, Handshake, PROTOCOL_VERSION,
 };
 use crate::registry::encode_registry_event;
-use crate::{Transport, TransportError};
+use crate::{AsyncTransport, Transport, TransportError};
 use spawned_address::NodeId;
 use spawned_wire::WireEnvelope;
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// TCP transport with peer socket map and connection pooling.
@@ -177,6 +177,26 @@ impl TcpTransport {
             )));
         }
         Ok(reply.payload)
+    }
+}
+
+/// Async wrapper around [`TcpTransport`] that offloads blocking I/O.
+pub struct TcpAsyncTransport(pub Arc<TcpTransport>);
+
+#[async_trait::async_trait]
+impl AsyncTransport for TcpAsyncTransport {
+    async fn send_envelope(&self, envelope: WireEnvelope) -> Result<(), TransportError> {
+        let tcp = self.0.clone();
+        tokio::task::spawn_blocking(move || tcp.send_envelope(envelope))
+            .await
+            .map_err(|_| TransportError::RemoteUnreachable)?
+    }
+
+    async fn request_envelope(&self, envelope: WireEnvelope) -> Result<Vec<u8>, TransportError> {
+        let tcp = self.0.clone();
+        tokio::task::spawn_blocking(move || tcp.request_envelope(envelope))
+            .await
+            .map_err(|_| TransportError::RemoteUnreachable)?
     }
 }
 

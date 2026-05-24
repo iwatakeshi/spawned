@@ -8,7 +8,7 @@ repository.workspace = true
 
 [features]
 default = []
-libp2p = ["dep:libp2p", "dep:tokio", "dep:futures", "dep:async-trait"]
+libp2p = ["dep:libp2p", "dep:futures", "dep:multiaddr", "dep:libp2p-identity"]
 
 [dependencies]
 spawned-address = { workspace = true }
@@ -17,14 +17,16 @@ thiserror = "2.0.12"
 tracing = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1.0", features = ["alloc"] }
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 libp2p = { version = "0.56", optional = true, features = ["tokio", "tcp", "noise", "yamux", "request-response", "macros"] }
-tokio = { version = "1", optional = true, features = ["rt", "time", "macros"] }
 futures = { version = "0.3", optional = true }
-async-trait = { version = "0.1", optional = true }
+multiaddr = { version = "0.18", optional = true }
+libp2p-identity = { version = "0.2", optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
-spawned-concurrency = { workspace = true, features = ["cluster"] }
+spawned-concurrency = { workspace = true, features = ["cluster", "cluster-libp2p"] }
 spawned-rt = { workspace = true }
 tokio = { version = "1", features = ["rt", "macros"] }
 tracing-subscriber = { workspace = true }

@@ -138,6 +138,47 @@ impl<M: Message> RemoteActorRef<M> {
             .map_err(map_transport_error)?;
         Ok(RemoteRequest::Remote(payload))
     }
+
+    /// Async request, routing locally or remotely without blocking the runtime.
+    pub async fn request_async(&self, msg: M) -> Result<M::Result, ActorError>
+    where
+        M: RemoteMessage,
+        M::Result: for<'de> serde::Deserialize<'de> + Send,
+    {
+        if self.address.is_local() {
+            if let Some(local) = self.local.as_ref() {
+                match local {
+                    LocalRecipient::Tasks(r) => {
+                        return crate::tasks::request(
+                            r.as_ref(),
+                            msg,
+                            std::time::Duration::from_secs(30),
+                        )
+                        .await
+                        .map_err(|_| ActorError::RemoteUnreachable);
+                    }
+                    LocalRecipient::Threads(r) => {
+                        let rx = r
+                            .request_raw(msg)
+                            .map_err(|_| ActorError::RemoteUnreachable)?;
+                        return rx.recv().map_err(|_| ActorError::ActorStopped);
+                    }
+                }
+            }
+        }
+
+        let correlation_id = next_correlation_id();
+        let envelope = WireEnvelope::request(self.address.clone(), &msg, correlation_id)?;
+        let payload = self
+            .router
+            .request_remote_async(envelope)
+            .await
+            .map_err(map_transport_error)?;
+        spawned_wire::decode_reply(&payload).map_err(|e| {
+            tracing::error!("wire reply decode error: {e}");
+            ActorError::RemoteUnreachable
+        })
+    }
 }
 
 /// Opaque request handle for local or remote replies.

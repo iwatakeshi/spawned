@@ -919,3 +919,33 @@ Use **`tasks`** when you need async I/O, high actor counts (thousands), or integ
 Use **`threads`** when you want simplicity, no async runtime, or CPU-bound actors that benefit from dedicated OS threads. Each actor gets its own thread, so this mode works best with a moderate number of actors.
 
 Both modes provide the same `Actor`, `Handler<M>`, `ActorRef<A>`, and `Context<A>` types. Switching requires changing imports and adding/removing `async`/`.await` on handlers and lifecycle hooks.
+
+---
+
+## Clustering (feature `cluster`)
+
+Enable with `spawned-concurrency = { features = ["cluster"] }`. See [CLUSTERING.md](CLUSTERING.md) for the full guide.
+
+| Type / method | Description |
+|---------------|-------------|
+| `Node::builder()` | Bootstrap TCP cluster listen + outbound transport |
+| `.listen(addr)` / `.peer(node, addr)` | TCP listen address and static peers |
+| `.transport_libp2p(keypair)` | libp2p backend (`cluster-libp2p` feature) |
+| `.listen_libp2p(multiaddr)` / `.libp2p_peer(...)` | libp2p listen + static peers |
+| `node.register_tasks_wire(address, recipient)` | Route inbound wire messages to a local actor |
+| `node.sync_registry()` | Exchange federated registry snapshots with peers |
+| `RemoteActorRef::<M>::remote(address, router)` | Address-aware local/remote handle |
+| `remote.request_async(msg).await` | Async request (preferred in tasks mode) |
+| `remote.request_raw(msg)` | Sync request; use from threads mode or with `spawn_blocking` |
+
+```rust
+use spawned_concurrency::{Node, RemoteActorRef, remote_message};
+
+let node = Node::builder()
+    .name("client@10.0.0.1")
+    .peer("server@10.0.0.2", "10.0.0.2:9000".parse()?)
+    .build()?;
+
+let remote = RemoteActorRef::<Ping>::remote(target_address, node.router());
+let pong = remote.request_async(Ping { n: 1 }).await?;
+```

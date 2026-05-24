@@ -9,7 +9,7 @@ use crate::protocol::{
     RegistryEvent, WireReply,
 };
 use crate::registry::encode_registry_event;
-use crate::{InboundDispatch, Transport, TransportError};
+use crate::{AsyncTransport, InboundDispatch, Transport, TransportError};
 use codec::ClusterCodec;
 use futures::StreamExt;
 use libp2p::request_response::{
@@ -36,20 +36,57 @@ pub struct Libp2pPeer {
     pub addr: Multiaddr,
 }
 
+enum RequestReply {
+    Sync(std::sync::mpsc::Sender<Result<Vec<u8>, TransportError>>),
+    Async(tokio::sync::oneshot::Sender<Result<Vec<u8>, TransportError>>),
+}
+
+enum VoidReply {
+    Sync(std::sync::mpsc::Sender<Result<(), TransportError>>),
+    Async(tokio::sync::oneshot::Sender<Result<(), TransportError>>),
+}
+
+enum PendingReply {
+    Sync(std::sync::mpsc::Sender<Result<Vec<u8>, TransportError>>),
+    Async(tokio::sync::oneshot::Sender<Result<Vec<u8>, TransportError>>),
+}
+
+fn complete_pending(tx: PendingReply, result: Result<Vec<u8>, TransportError>) {
+    match tx {
+        PendingReply::Sync(tx) => {
+            let _ = tx.send(result);
+        }
+        PendingReply::Async(tx) => {
+            let _ = tx.send(result);
+        }
+    }
+}
+
+fn complete_void(tx: VoidReply, result: Result<(), TransportError>) {
+    match tx {
+        VoidReply::Sync(tx) => {
+            let _ = tx.send(result);
+        }
+        VoidReply::Async(tx) => {
+            let _ = tx.send(result);
+        }
+    }
+}
+
 enum RuntimeCommand {
     Send {
         peer_id: PeerId,
         frame: Vec<u8>,
         expect_reply: bool,
-        respond_to: std::sync::mpsc::Sender<Result<Vec<u8>, TransportError>>,
+        respond_to: RequestReply,
     },
     Broadcast {
         frame: Vec<u8>,
-        respond_to: std::sync::mpsc::Sender<Result<(), TransportError>>,
+        respond_to: VoidReply,
     },
     SyncPeer {
         peer_id: PeerId,
-        respond_to: std::sync::mpsc::Sender<Result<(), TransportError>>,
+        respond_to: VoidReply,
     },
 }
 
@@ -57,11 +94,11 @@ struct DeferredSend {
     peer_id: PeerId,
     frame: Vec<u8>,
     expect_reply: bool,
-    respond_to: std::sync::mpsc::Sender<Result<Vec<u8>, TransportError>>,
+    respond_to: RequestReply,
 }
 
 struct SharedState {
-    pending: HashMap<OutboundRequestId, std::sync::mpsc::Sender<Result<Vec<u8>, TransportError>>>,
+    pending: HashMap<OutboundRequestId, PendingReply>,
     peer_to_node: HashMap<PeerId, NodeId>,
     node_to_peer: HashMap<NodeId, PeerId>,
     listen_addrs: Vec<Multiaddr>,
@@ -73,7 +110,7 @@ pub struct Libp2pCluster {
     local_node: NodeId,
     cmd_tx: Sender<RuntimeCommand>,
     shutdown: Arc<AtomicBool>,
-    join: Option<JoinHandle<()>>,
+    join: Arc<Mutex<Option<JoinHandle<()>>>>,
     inner: Arc<Mutex<SharedState>>,
 }
 
@@ -125,6 +162,8 @@ impl Libp2pCluster {
             })
             .map_err(|e| TransportError::Io(e.to_string()))?;
 
+        let join = Arc::new(Mutex::new(Some(join)));
+
         for _ in 0..50 {
             if !shared
                 .lock()
@@ -142,7 +181,7 @@ impl Libp2pCluster {
             local_node,
             cmd_tx,
             shutdown,
-            join: Some(join),
+            join,
             inner: shared,
         })
     }
@@ -207,7 +246,7 @@ impl Libp2pCluster {
         self.cmd_tx
             .send(RuntimeCommand::Broadcast {
                 frame,
-                respond_to: tx,
+                respond_to: VoidReply::Sync(tx),
             })
             .map_err(|_| TransportError::RemoteUnreachable)?;
         rx.recv_timeout(Duration::from_secs(30))
@@ -219,7 +258,7 @@ impl Libp2pCluster {
         self.cmd_tx
             .send(RuntimeCommand::SyncPeer {
                 peer_id,
-                respond_to: tx,
+                respond_to: VoidReply::Sync(tx),
             })
             .map_err(|_| TransportError::RemoteUnreachable)?;
         rx.recv_timeout(Duration::from_secs(30))
@@ -246,24 +285,66 @@ impl Libp2pCluster {
                 peer_id,
                 frame,
                 expect_reply,
-                respond_to: tx,
+                respond_to: RequestReply::Sync(tx),
             })
             .map_err(|_| TransportError::RemoteUnreachable)?;
         rx.recv_timeout(Duration::from_secs(30))
             .map_err(|_| TransportError::RemoteUnreachable)?
     }
 
-    pub fn shutdown(mut self) {
+    async fn send_frame_async(
+        &self,
+        node: &NodeId,
+        frame: Vec<u8>,
+        expect_reply: bool,
+    ) -> Result<Vec<u8>, TransportError> {
+        let peer_id = self
+            .inner
+            .lock()
+            .map_err(|_| TransportError::RemoteUnreachable)?
+            .node_to_peer
+            .get(node)
+            .copied()
+            .ok_or(TransportError::RemoteUnreachable)?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.cmd_tx
+            .send(RuntimeCommand::Send {
+                peer_id,
+                frame,
+                expect_reply,
+                respond_to: RequestReply::Async(tx),
+            })
+            .map_err(|_| TransportError::RemoteUnreachable)?;
+        rx.await.map_err(|_| TransportError::RemoteUnreachable)?
+    }
+
+    /// Signal the background swarm to stop.
+    pub fn signal_shutdown(&self) {
         self.shutdown.store(true, Ordering::Relaxed);
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
+    }
+
+    /// Wait for the background swarm thread to exit.
+    pub fn join_thread(&self) {
+        if let Ok(mut guard) = self.join.lock() {
+            if let Some(join) = guard.take() {
+                let _ = join.join();
+            }
+        }
+    }
+
+    pub fn shutdown(self) {
+        self.signal_shutdown();
+        if let Ok(mut guard) = self.join.lock() {
+            if let Some(join) = guard.take() {
+                let _ = join.join();
+            }
         }
     }
 }
 
 impl Drop for Libp2pCluster {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Relaxed);
+        self.signal_shutdown();
     }
 }
 
@@ -292,6 +373,46 @@ impl Transport for Libp2pCluster {
         let bytes =
             encode_cluster_frame(&ClusterFrame::Actor(envelope)).map_err(TransportError::from)?;
         let reply_bytes = self.send_frame(&node, bytes, true)?;
+        if reply_bytes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let reply = decode_reply_frame(&reply_bytes).map_err(TransportError::from)?;
+        if reply.correlation_id != correlation_id {
+            return Err(TransportError::Protocol(format!(
+                "correlation mismatch: expected {correlation_id}, got {}",
+                reply.correlation_id
+            )));
+        }
+        Ok(reply.payload)
+    }
+}
+
+#[async_trait::async_trait]
+impl AsyncTransport for Libp2pCluster {
+    async fn send_envelope(&self, envelope: WireEnvelope) -> Result<(), TransportError> {
+        if envelope.correlation_id != 0 {
+            return Err(TransportError::Protocol(
+                "fire-and-forget envelope must use correlation_id 0".into(),
+            ));
+        }
+        let node = envelope.to.node.clone();
+        let bytes =
+            encode_cluster_frame(&ClusterFrame::Actor(envelope)).map_err(TransportError::from)?;
+        self.send_frame_async(&node, bytes, false).await?;
+        Ok(())
+    }
+
+    async fn request_envelope(&self, envelope: WireEnvelope) -> Result<Vec<u8>, TransportError> {
+        let correlation_id = envelope.correlation_id;
+        if correlation_id == 0 {
+            return Err(TransportError::Protocol(
+                "request envelope requires non-zero correlation id".into(),
+            ));
+        }
+        let node = envelope.to.node.clone();
+        let bytes =
+            encode_cluster_frame(&ClusterFrame::Actor(envelope)).map_err(TransportError::from)?;
+        let reply_bytes = self.send_frame_async(&node, bytes, true).await?;
         if reply_bytes.is_empty() {
             return Ok(Vec::new());
         }
@@ -448,9 +569,22 @@ fn dispatch_send(
             .lock()
             .map_err(|_| TransportError::RemoteUnreachable)?
             .pending
-            .insert(request_id, send.respond_to);
+            .insert(
+                request_id,
+                match send.respond_to {
+                    RequestReply::Sync(tx) => PendingReply::Sync(tx),
+                    RequestReply::Async(tx) => PendingReply::Async(tx),
+                },
+            );
     } else {
-        let _ = send.respond_to.send(Ok(Vec::new()));
+        match send.respond_to {
+            RequestReply::Sync(tx) => {
+                let _ = tx.send(Ok(Vec::new()));
+            }
+            RequestReply::Async(tx) => {
+                let _ = tx.send(Ok(Vec::new()));
+            }
+        }
     }
     Ok(())
 }
@@ -496,7 +630,7 @@ fn handle_command(
                 ensure_peer_dialed(swarm, peer_id, peer_addrs)?;
                 let _ = swarm.behaviour_mut().send_request(&peer_id, frame.clone());
             }
-            let _ = respond_to.send(Ok(()));
+            let _ = complete_void(respond_to, Ok(()));
         }
         RuntimeCommand::SyncPeer {
             peer_id,
@@ -505,7 +639,7 @@ fn handle_command(
             ensure_peer_dialed(swarm, peer_id, peer_addrs)?;
             send_control_snapshots_to_peer(swarm, control, peer_id)?;
             synced_peers.insert(peer_id);
-            let _ = respond_to.send(Ok(()));
+            complete_void(respond_to, Ok(()));
         }
     }
     Ok(())
@@ -603,8 +737,7 @@ fn handle_swarm_event(
             } => {
                 if let Ok(mut guard) = shared.lock() {
                     if let Some(tx) = guard.pending.remove(&request_id) {
-                        // Actor replies are WireReply bytes, not ClusterFrame.
-                        let _ = tx.send(Ok(response));
+                        complete_pending(tx, Ok(response));
                     } else {
                         drop(guard);
                         apply_inbound_frame(&response, control)?;

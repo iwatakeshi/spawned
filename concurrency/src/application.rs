@@ -114,6 +114,38 @@ impl ApplicationBuilder {
         self
     }
 
+    /// Use libp2p transport (`cluster-libp2p` feature).
+    #[cfg(feature = "cluster-libp2p")]
+    pub fn transport_libp2p(
+        mut self,
+        keypair: Option<crate::cluster::identity::Keypair>,
+    ) -> Self {
+        self.use_node = true;
+        self.node_builder = self.node_builder.transport_libp2p(keypair);
+        self
+    }
+
+    /// Listen for inbound libp2p connections (`cluster-libp2p` feature).
+    #[cfg(feature = "cluster-libp2p")]
+    pub fn listen_libp2p(mut self, addr: crate::cluster::Multiaddr) -> Self {
+        self.use_node = true;
+        self.node_builder = self.node_builder.listen_libp2p(addr);
+        self
+    }
+
+    /// Add a remote libp2p peer (`cluster-libp2p` feature).
+    #[cfg(feature = "cluster-libp2p")]
+    pub fn libp2p_peer(
+        mut self,
+        node: impl Into<spawned_address::NodeId>,
+        peer_id: crate::cluster::PeerId,
+        addr: crate::cluster::Multiaddr,
+    ) -> Self {
+        self.use_node = true;
+        self.node_builder = self.node_builder.libp2p_peer(node, peer_id, addr);
+        self
+    }
+
     /// Build optional cluster node, run startup, register OS signal shutdown.
     pub async fn start<F, Fut>(self, startup: F) -> Result<Application, ApplicationError>
     where

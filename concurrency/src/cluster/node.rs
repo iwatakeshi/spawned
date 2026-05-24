@@ -1,6 +1,6 @@
-//! Cluster node bootstrap (Phase 8d + 10.1 federated registry).
+//! Cluster node bootstrap (Phase 8d + 10.1 federated registry + 11.1 libp2p).
 //!
-//! [`NodeBuilder`] wires TCP listen/transport, installs the global
+//! [`NodeBuilder`] wires TCP or libp2p listen/transport, installs the global
 //! [`ClusterRouter`], and optionally registers OS signal shutdown.
 
 use crate::child_handle::ChildHandle;
@@ -10,12 +10,15 @@ use crate::shutdown_signal::SignalGuard;
 use crate::RemoteMessage;
 use spawned_address::{local_node, set_local_node_for_test, ActorAddress, NodeId};
 use spawned_cluster::{
-    AddressDispatch, ClusterRouter, ControlPlaneHooks, TcpClusterListener, TcpTransport, Transport,
-    TransportError, UnavailableTransport,
+    AddressDispatch, AsyncTransport, ClusterRouter, ControlPlaneHooks, TcpAsyncTransport,
+    TcpClusterListener, TcpTransport, Transport, TransportError, UnavailableTransport,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+
+#[cfg(feature = "cluster-libp2p")]
+use spawned_cluster::{Libp2pCluster, Libp2pPeer};
 
 /// Errors starting a cluster [`Node`].
 #[derive(Debug, thiserror::Error)]
@@ -24,14 +27,41 @@ pub enum NodeError {
     Transport(#[from] TransportError),
     #[error("node name was already initialized before build")]
     NameAlreadySet,
+    #[error("invalid node configuration: {0}")]
+    InvalidConfig(String),
 }
 
-/// Running cluster node: router, optional TCP listener, signal guards.
+enum ClusterBackend {
+    Tcp {
+        transport: Option<Arc<TcpTransport>>,
+        listener: Option<TcpClusterListener>,
+    },
+    #[cfg(feature = "cluster-libp2p")]
+    Libp2p(Arc<Libp2pCluster>),
+    None,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum TransportKind {
+    #[default]
+    Tcp,
+    #[cfg(feature = "cluster-libp2p")]
+    Libp2p,
+}
+
+#[cfg(feature = "cluster-libp2p")]
+#[derive(Clone)]
+struct Libp2pPeerConfig {
+    node: NodeId,
+    peer_id: spawned_cluster::PeerId,
+    addr: spawned_cluster::Multiaddr,
+}
+
+/// Running cluster node: router, optional cluster backend, signal guards.
 pub struct Node {
     local_node: NodeId,
     router: Arc<ClusterRouter>,
-    tcp: Option<Arc<TcpTransport>>,
-    listener: Option<TcpClusterListener>,
+    backend: ClusterBackend,
     dispatch: Arc<AddressDispatch>,
     _signal_guards: Vec<SignalGuard>,
 }
@@ -52,9 +82,21 @@ impl Node {
         self.router.clone()
     }
 
-    /// Cluster listen address, if configured.
+    /// Cluster listen address, if configured (TCP only).
     pub fn listen_addr(&self) -> Option<SocketAddr> {
-        self.listener.as_ref().map(|l| l.local_addr())
+        match &self.backend {
+            ClusterBackend::Tcp { listener, .. } => listener.as_ref().map(|l| l.local_addr()),
+            _ => None,
+        }
+    }
+
+    /// libp2p listen multiaddrs, when using the libp2p backend.
+    #[cfg(feature = "cluster-libp2p")]
+    pub fn listen_multiaddrs(&self) -> Vec<spawned_cluster::Multiaddr> {
+        match &self.backend {
+            ClusterBackend::Libp2p(cluster) => cluster.listen_addrs(),
+            _ => Vec::new(),
+        }
     }
 
     /// Register a tasks-runtime actor for inbound wire delivery.
@@ -90,8 +132,15 @@ impl Node {
 
     /// Exchange registry snapshots with all configured peers.
     pub fn sync_registry(&self) -> Result<(), TransportError> {
-        if let Some(tcp) = &self.tcp {
-            tcp.sync_peers()?;
+        match &self.backend {
+            ClusterBackend::Tcp { transport, .. } => {
+                if let Some(tcp) = transport {
+                    tcp.sync_peers()?;
+                }
+            }
+            #[cfg(feature = "cluster-libp2p")]
+            ClusterBackend::Libp2p(cluster) => cluster.sync_peers()?,
+            ClusterBackend::None => {}
         }
         Ok(())
     }
@@ -99,8 +148,18 @@ impl Node {
 
 impl Drop for Node {
     fn drop(&mut self) {
-        if let Some(listener) = self.listener.take() {
-            listener.shutdown();
+        match &mut self.backend {
+            ClusterBackend::Tcp { listener, .. } => {
+                if let Some(listener) = listener.take() {
+                    listener.shutdown();
+                }
+            }
+            #[cfg(feature = "cluster-libp2p")]
+            ClusterBackend::Libp2p(cluster) => {
+                cluster.signal_shutdown();
+                cluster.join_thread();
+            }
+            ClusterBackend::None => {}
         }
     }
 }
@@ -109,8 +168,15 @@ impl Drop for Node {
 #[derive(Default)]
 pub struct NodeBuilder {
     name: Option<NodeId>,
+    transport: TransportKind,
     listen: Option<SocketAddr>,
     peers: HashMap<NodeId, SocketAddr>,
+    #[cfg(feature = "cluster-libp2p")]
+    keypair: Option<spawned_cluster::identity::Keypair>,
+    #[cfg(feature = "cluster-libp2p")]
+    listen_libp2p: Option<spawned_cluster::Multiaddr>,
+    #[cfg(feature = "cluster-libp2p")]
+    libp2p_peers: Vec<Libp2pPeerConfig>,
     shutdown_handles: Vec<ChildHandle>,
 }
 
@@ -121,15 +187,52 @@ impl NodeBuilder {
         self
     }
 
+    /// Use TCP transport (default).
+    pub fn transport_tcp(mut self) -> Self {
+        self.transport = TransportKind::Tcp;
+        self
+    }
+
+    /// Use libp2p transport (`cluster-libp2p` feature).
+    #[cfg(feature = "cluster-libp2p")]
+    pub fn transport_libp2p(mut self, keypair: Option<spawned_cluster::identity::Keypair>) -> Self {
+        self.transport = TransportKind::Libp2p;
+        self.keypair = keypair;
+        self
+    }
+
     /// Listen for inbound cluster TCP connections.
     pub fn listen(mut self, addr: SocketAddr) -> Self {
         self.listen = Some(addr);
         self
     }
 
-    /// Add a remote peer reachable at the given socket address.
+    /// Listen for inbound libp2p connections (`cluster-libp2p` feature).
+    #[cfg(feature = "cluster-libp2p")]
+    pub fn listen_libp2p(mut self, addr: spawned_cluster::Multiaddr) -> Self {
+        self.listen_libp2p = Some(addr);
+        self
+    }
+
+    /// Add a remote peer reachable at the given socket address (TCP).
     pub fn peer(mut self, node: impl Into<NodeId>, addr: SocketAddr) -> Self {
         self.peers.insert(node.into(), addr);
+        self
+    }
+
+    /// Add a remote libp2p peer (`cluster-libp2p` feature).
+    #[cfg(feature = "cluster-libp2p")]
+    pub fn libp2p_peer(
+        mut self,
+        node: impl Into<NodeId>,
+        peer_id: spawned_cluster::PeerId,
+        addr: spawned_cluster::Multiaddr,
+    ) -> Self {
+        self.libp2p_peers.push(Libp2pPeerConfig {
+            node: node.into(),
+            peer_id,
+            addr,
+        });
         self
     }
 
@@ -139,8 +242,28 @@ impl NodeBuilder {
         self
     }
 
+    fn validate(&self) -> Result<(), NodeError> {
+        #[cfg(feature = "cluster-libp2p")]
+        {
+            if self.transport == TransportKind::Libp2p {
+                if self.listen.is_some() || !self.peers.is_empty() {
+                    return Err(NodeError::InvalidConfig(
+                        "libp2p transport cannot be combined with TCP listen/peer options".into(),
+                    ));
+                }
+            } else if self.listen_libp2p.is_some() || !self.libp2p_peers.is_empty() {
+                return Err(NodeError::InvalidConfig(
+                    "TCP transport cannot be combined with libp2p listen/peer options".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Build the node: transport, optional listener, global router, signal hooks.
     pub fn build(self) -> Result<Node, NodeError> {
+        self.validate()?;
+
         if let Some(name) = self.name.clone() {
             set_local_node_for_test(name.clone());
             if local_node() != name {
@@ -150,6 +273,16 @@ impl NodeBuilder {
 
         let local = local_node();
         let dispatch = Arc::new(AddressDispatch::new());
+
+        #[cfg(feature = "cluster-libp2p")]
+        let federated = match self.transport {
+            TransportKind::Libp2p => {
+                self.listen_libp2p.is_some() || !self.libp2p_peers.is_empty()
+            }
+            TransportKind::Tcp => self.listen.is_some() || !self.peers.is_empty(),
+        };
+
+        #[cfg(not(feature = "cluster-libp2p"))]
         let federated = self.listen.is_some() || !self.peers.is_empty();
 
         let control = if federated {
@@ -162,6 +295,11 @@ impl NodeBuilder {
         } else {
             ControlPlaneHooks::none()
         };
+
+        #[cfg(feature = "cluster-libp2p")]
+        if self.transport == TransportKind::Libp2p {
+            return self.build_libp2p(local, dispatch, control, federated);
+        }
 
         let tcp: Option<Arc<TcpTransport>> = if self.peers.is_empty() {
             None
@@ -186,12 +324,16 @@ impl NodeBuilder {
         }
 
         let transport: Arc<dyn Transport> = if let Some(tcp) = tcp.clone() {
-            tcp
+            tcp.clone()
         } else {
             Arc::new(UnavailableTransport)
         };
 
-        let router = Arc::new(ClusterRouter::new(transport));
+        let async_transport: Option<Arc<dyn AsyncTransport>> = tcp
+            .as_ref()
+            .map(|tcp| Arc::new(TcpAsyncTransport(tcp.clone())) as Arc<dyn AsyncTransport>);
+
+        let router = Arc::new(ClusterRouter::with_async(transport, async_transport));
         let _ = ClusterRouter::set_global(router.clone());
 
         let listener = if let Some(addr) = self.listen {
@@ -215,8 +357,91 @@ impl NodeBuilder {
         Ok(Node {
             local_node: local,
             router,
-            tcp,
-            listener,
+            backend: ClusterBackend::Tcp {
+                transport: tcp,
+                listener,
+            },
+            dispatch,
+            _signal_guards,
+        })
+    }
+
+    #[cfg(feature = "cluster-libp2p")]
+    fn build_libp2p(
+        self,
+        local: NodeId,
+        dispatch: Arc<AddressDispatch>,
+        control: ControlPlaneHooks,
+        federated: bool,
+    ) -> Result<Node, NodeError> {
+        let listen = match self.listen_libp2p {
+            Some(addr) => addr,
+            None if !self.libp2p_peers.is_empty() => {
+                let port = Libp2pCluster::ephemeral_tcp_port()?;
+                format!("/ip4/127.0.0.1/tcp/{port}")
+                    .parse()
+                    .map_err(|e| TransportError::Protocol(format!("invalid multiaddr: {e}")))?
+            }
+            None => {
+                return Err(NodeError::InvalidConfig(
+                    "libp2p node requires listen_libp2p or at least one libp2p_peer".into(),
+                ));
+            }
+        };
+
+        let keypair = self
+            .keypair
+            .unwrap_or_else(|| spawned_cluster::identity::Keypair::generate_ed25519());
+
+        let peers: Vec<Libp2pPeer> = self
+            .libp2p_peers
+            .into_iter()
+            .map(|peer| Libp2pPeer {
+                node: peer.node,
+                peer_id: peer.peer_id,
+                addr: peer.addr,
+            })
+            .collect();
+
+        let cluster = Arc::new(Libp2pCluster::start(
+            keypair,
+            local.clone(),
+            listen,
+            peers,
+            dispatch.clone(),
+            control.clone(),
+        )?);
+
+        if federated {
+            let cluster_registry = cluster.clone();
+            super::registry_sync::install(move |event| {
+                let _ = cluster_registry.broadcast_registry(event);
+            });
+            let cluster_pg = cluster.clone();
+            super::pg_sync::install(move |event| {
+                let _ = cluster_pg.broadcast_pg(event);
+            });
+        }
+
+        let transport: Arc<dyn Transport> = cluster.clone();
+        let async_transport: Arc<dyn AsyncTransport> = cluster.clone();
+        let router = Arc::new(ClusterRouter::with_async(
+            transport,
+            Some(async_transport),
+        ));
+        let _ = ClusterRouter::set_global(router.clone());
+
+        let _signal_guards = if self.shutdown_handles.is_empty() {
+            Vec::new()
+        } else {
+            spawn_shutdown_signal_dispatcher_tasks();
+            register_shutdown_on_signal(&self.shutdown_handles)
+        };
+
+        Ok(Node {
+            local_node: local,
+            router,
+            backend: ClusterBackend::Libp2p(cluster),
             dispatch,
             _signal_guards,
         })

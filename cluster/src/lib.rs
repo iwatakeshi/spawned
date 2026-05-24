@@ -3,6 +3,7 @@
 //! Phase 8b provides [`ClusterRouter`] and [`Transport`]; Phase 8c adds
 //! [`TcpTransport`] and [`TcpClusterListener`] for length-framed TCP.
 
+mod async_transport;
 mod control;
 mod dispatch;
 mod error;
@@ -17,6 +18,7 @@ mod tcp;
 #[cfg(feature = "libp2p")]
 mod libp2p;
 
+pub use async_transport::AsyncTransport;
 pub use control::ControlPlaneHooks;
 pub use dispatch::AddressDispatch;
 pub use error::TransportError;
@@ -25,7 +27,13 @@ pub use pg_sync::{PgHooks, PgInbound, PgSnapshot};
 pub use protocol::{ClusterFrame, Handshake, PgEvent, PgMemberEntry, RegistryEvent, WireReply, PROTOCOL_VERSION};
 pub use registry::{RegistryHooks, RegistryInbound, RegistrySnapshot};
 pub use router::ClusterRouter;
-pub use tcp::{TcpClusterListener, TcpTransport};
+pub use tcp::{TcpAsyncTransport, TcpClusterListener, TcpTransport};
 pub use transport::{Transport, UnavailableTransport};
+#[cfg(feature = "libp2p")]
+pub use libp2p_identity as identity;
+#[cfg(feature = "libp2p")]
+pub use libp2p_identity::PeerId;
+#[cfg(feature = "libp2p")]
+pub use multiaddr::Multiaddr;
 #[cfg(feature = "libp2p")]
 pub use libp2p::{Libp2pCluster, Libp2pPeer, CLUSTER_PROTOCOL as LIBP2P_CLUSTER_PROTOCOL};

@@ -3,14 +3,16 @@
 #![cfg(feature = "libp2p")]
 
 use spawned_address::{ActorAddress, NodeId};
-use spawned_cluster::{ClusterRouter, ControlPlaneHooks, Libp2pCluster, Libp2pPeer};
+use spawned_cluster::{
+    identity, AsyncTransport, ClusterRouter, ControlPlaneHooks, Libp2pCluster, Libp2pPeer,
+    Multiaddr, PeerId,
+};
 use spawned_concurrency::cluster::{
     apply_remote_event, apply_remote_pg_event, local_pg_snapshot, local_snapshot,
 };
 use spawned_concurrency::message::Message;
 use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
 use spawned_concurrency::{remote_message, tasks_wire_dispatch, RemoteActorRef};
-use libp2p::{identity, Multiaddr, PeerId};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -69,7 +71,6 @@ async fn libp2p_two_node_request_roundtrip() {
     .unwrap();
 
     let client_key = identity::Keypair::generate_ed25519();
-    let client_peer = client_key.public().to_peer_id();
     let client_node = NodeId::new("node_b@127.0.0.1");
     let client_port = Libp2pCluster::ephemeral_tcp_port().unwrap();
     let client_listen: Multiaddr = format!("/ip4/127.0.0.1/tcp/{client_port}").parse().unwrap();
@@ -88,30 +89,31 @@ async fn libp2p_two_node_request_roundtrip() {
         Arc::new(local_pg_snapshot),
     );
 
-    let client = Libp2pCluster::start(
-        client_key,
-        client_node,
-        client_listen,
-        peers,
-        Arc::new(spawned_cluster::AddressDispatch::new()),
-        control,
-    )
-    .unwrap();
+    let client = Arc::new(
+        Libp2pCluster::start(
+            client_key,
+            client_node,
+            client_listen,
+            peers,
+            Arc::new(spawned_cluster::AddressDispatch::new()),
+            control,
+        )
+        .unwrap(),
+    );
 
     client.sync_peers().unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let transport = Arc::new(client);
-    let router = Arc::new(ClusterRouter::new(transport));
+    let transport: Arc<dyn spawned_cluster::Transport> = client.clone();
+    let async_transport: Arc<dyn AsyncTransport> = client;
+    let router = Arc::new(ClusterRouter::with_async(
+        transport,
+        Some(async_transport),
+    ));
 
     let remote = RemoteActorRef::<Echo>::remote(address, router);
-    let reply = tokio::task::spawn_blocking(move || remote.request_raw(Echo { n: 41 }))
-        .await
-        .unwrap()
-        .unwrap();
-    let n = reply.recv().await.unwrap();
+    let n = remote.request_async(Echo { n: 41 }).await.unwrap();
     assert_eq!(n, 42);
 
-    let _ = client_peer;
     server.shutdown();
 }

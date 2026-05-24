@@ -170,7 +170,7 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 | **Dropping / sliding buffers** | Only fixed capacity with fail-fast or block |
 | **Configurable FIFO mode** | `MailboxConfig::fifo()` to disable system priority |
 
-## Phase 8: Clustering foundations — in progress
+## Phase 8: Clustering foundations — shipped
 
 **North star:** OTP over Kameo — see [CLUSTERING.md](CLUSTERING.md).
 
@@ -282,6 +282,24 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 |-------|--------|
 | **10.3** | libp2p transport — shipped |
 
+### 11.1. NodeBuilder libp2p — shipped
+
+- `cluster-libp2p` feature on `spawned-concurrency` wires `Libp2pCluster` into `NodeBuilder` / `Application`
+- `transport_libp2p`, `listen_libp2p`, `libp2p_peer` mirror TCP `listen` / `peer`
+- Federated registry + pg hooks installed automatically (same as TCP)
+- Integration test: `concurrency/tests/node_libp2p_two_node.rs`
+
+### 11.2. Async remote requests — shipped
+
+- `AsyncTransport` trait + `ClusterRouter::request_remote_async`
+- Native oneshot async path in `Libp2pCluster`; `TcpAsyncTransport` wraps blocking TCP
+- `RemoteActorRef::request_async` — prefer in async handlers over `request_raw` + `spawn_blocking`
+- `NodeBuilder` installs async transport alongside sync `Transport` for both TCP and libp2p
+
+| Phase | Focus |
+|-------|--------|
+| **11.2** | Async remote requests — shipped |
+
 ## Future Considerations
 
 | Feature | Notes |
@@ -292,7 +310,7 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 | State machines (`gen_statem`) | Protocol implementations |
 | Backoff strategies | ✅ Shipped in Phase 9.1 (`RestartBackoff` on `ChildSpec`) |
 | Persistence / event sourcing | Akka Persistence pattern |
-| Clustering / distribution | Phase 8–10 in progress — see [CLUSTERING.md](CLUSTERING.md) |
+| Clustering / distribution | Phase 8–11 shipped — see [CLUSTERING.md](CLUSTERING.md) |
 | Built-in observability | Message latency (mailbox depth shipped in 6c) |
 | Custom runtime | Purpose-built actor runtime |
 

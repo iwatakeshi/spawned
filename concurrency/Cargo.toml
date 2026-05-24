@@ -9,6 +9,7 @@ repository.workspace = true
 [features]
 default = []
 cluster = ["dep:spawned-cluster", "dep:serde"]
+cluster-libp2p = ["cluster", "spawned-cluster/libp2p"]
 
 [dependencies]
 spawned-address = { workspace = true }
@@ -24,6 +25,8 @@ serde = { version = "1", optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
+spawned-cluster = { workspace = true, features = ["libp2p"] }
+tracing-subscriber = { workspace = true }
 # This tokio imports are only used in tests, we should not use them in the library code.
 tokio-stream = { version = "0.1.17" }
 tokio = { version = "1", features = ["full"] }

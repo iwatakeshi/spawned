@@ -120,7 +120,7 @@ let remote = RemoteActorRef::<Ping>::remote(addr, node.router());
 - **`tasks_wire_dispatch` / `threads_wire_dispatch`** — bridge wire envelopes to local `Recipient`s
 - Integration tests: `cluster/tests/tcp_smoke.rs`, `cluster/tests/two_node.rs`
 
-Remote `request_raw` uses blocking I/O — call from async code via `tokio::task::spawn_blocking` until Phase 8d adds async transport wiring.
+Remote `request_raw` uses blocking I/O — use `request_async` in async handlers (Phase 11.2), or `spawn_blocking` for legacy sync paths.
 
 ```rust
 use spawned_concurrency::{
@@ -175,11 +175,47 @@ let router = Arc::new(ClusterRouter::new(Arc::new(cluster)));
 ```
 
 - Static peer map (like TCP `HashMap<NodeId, SocketAddr>`): each peer needs `NodeId`, `PeerId`, and dialable `Multiaddr`
-- Background OS thread runs the libp2p swarm; `Transport` methods are sync (use `spawn_blocking` from async tests)
+- Background OS thread runs the libp2p swarm
 - Control-plane snapshots exchange on connect; actor replies are `WireReply` bytes (not `ClusterFrame`)
 - Integration test: `cargo test -p spawned-cluster --features libp2p --test libp2p_two_node`
 
-`NodeBuilder` remains TCP-only today; use `Libp2pCluster` directly for libp2p nodes.
+### NodeBuilder libp2p bootstrap (Phase 11.1)
+
+Enable with `cluster-libp2p` on `spawned-concurrency`:
+
+```toml
+spawned-concurrency = { version = "...", features = ["cluster-libp2p"] }
+```
+
+```rust
+use spawned_concurrency::{identity, Node, RemoteActorRef};
+
+let server_key = identity::Keypair::generate_ed25519();
+let server_peer = server_key.public().to_peer_id();
+
+let node = Node::builder()
+    .name("worker@10.0.0.5")
+    .transport_libp2p(Some(server_key))
+    .listen_libp2p("/ip4/0.0.0.0/tcp/9000".parse()?)
+    .libp2p_peer("peer@10.0.0.2", remote_peer_id, remote_multiaddr)
+    .build()?;
+
+node.register_tasks_wire(address, actor.recipient());
+node.sync_registry()?;
+```
+
+TCP and libp2p listen/peer options are mutually exclusive on a single node.
+
+## Phase 11.2: Async remote requests
+
+Prefer `RemoteActorRef::request_async` in async code — it uses native async I/O for libp2p and offloads TCP to a blocking pool without stalling the runtime:
+
+```rust
+let remote = RemoteActorRef::<Ping>::remote(address, node.router());
+let pong = remote.request_async(Ping { n: 1 }).await?;
+```
+
+Sync `request_raw` remains for threads mode and legacy call sites.
 
 ### Clustering checklist (every feature PR)
 
@@ -202,5 +238,7 @@ let router = Arc::new(ClusterRouter::new(Arc::new(cluster)));
 | **10.1** | Federated registry (this document) |
 | **10.2** | Distributed pg (this document) |
 | **10.3** | libp2p transport (this document) |
+| **11.1** | NodeBuilder libp2p bootstrap (this document) |
+| **11.2** | Async remote requests (this document) |
 
 See [ROADMAP.md](ROADMAP.md) for full detail.

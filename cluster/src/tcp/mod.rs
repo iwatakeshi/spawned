@@ -2,4 +2,4 @@ mod listener;
 mod transport;
 
 pub use listener::TcpClusterListener;
-pub use transport::TcpTransport;
+pub use transport::{TcpAsyncTransport, TcpTransport};

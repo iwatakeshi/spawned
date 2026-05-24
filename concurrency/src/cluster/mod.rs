@@ -25,9 +25,14 @@ pub use crate::pg::{
 };
 
 pub use spawned_cluster::{
-    AddressDispatch, ClusterFrame, ClusterRouter, ControlPlaneHooks, InboundDispatch, PgEvent,
-    PgMemberEntry, RegistryEvent, RegistryHooks, TcpClusterListener, TcpTransport, Transport,
-    TransportError, UnavailableTransport, WireReply, PROTOCOL_VERSION,
+    AddressDispatch, AsyncTransport, ClusterFrame, ClusterRouter, ControlPlaneHooks, InboundDispatch,
+    PgEvent, PgMemberEntry, RegistryEvent, RegistryHooks, TcpAsyncTransport, TcpClusterListener,
+    TcpTransport, Transport, TransportError, UnavailableTransport, WireReply, PROTOCOL_VERSION,
+};
+
+#[cfg(feature = "cluster-libp2p")]
+pub use spawned_cluster::{
+    identity, Libp2pCluster, Libp2pPeer, Multiaddr, PeerId, LIBP2P_CLUSTER_PROTOCOL,
 };
 
 pub(crate) fn remove_named_by_actor_id(id: crate::child_handle::ActorId) {

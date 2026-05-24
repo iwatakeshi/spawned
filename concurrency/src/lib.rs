@@ -80,11 +80,15 @@ pub use supervisor::SupervisorStrategy;
 #[cfg(feature = "cluster")]
 pub use cluster::{
     apply_remote_pg_event, install_pg_sync, local_pg_snapshot, lookup_address, lookup_handle,
-    register_named, unregister_named, tasks_wire_dispatch, threads_wire_dispatch, ClusterRouter,
-    ControlPlaneHooks, InboundDispatch, NamedRegistryError, Node, NodeBuilder, NodeError, PgEvent,
-    PgMemberEntry, RemoteActorRef, RemoteRequest, TcpClusterListener, TcpTransport, Transport,
-    TransportError, UnavailableTransport, WireReply, PROTOCOL_VERSION,
+    register_named, unregister_named, tasks_wire_dispatch, threads_wire_dispatch, AsyncTransport,
+    ClusterRouter, ControlPlaneHooks, InboundDispatch, NamedRegistryError, Node, NodeBuilder,
+    NodeError, PgEvent, PgMemberEntry, RemoteActorRef, RemoteRequest, TcpAsyncTransport,
+    TcpClusterListener, TcpTransport, Transport, TransportError, UnavailableTransport, WireReply,
+    PROTOCOL_VERSION,
 };
+
+#[cfg(feature = "cluster-libp2p")]
+pub use cluster::{identity, Libp2pCluster, Libp2pPeer, Multiaddr, PeerId, LIBP2P_CLUSTER_PROTOCOL};
 
 #[cfg(test)]
 mod remote_macro_tests {

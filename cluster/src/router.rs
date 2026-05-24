@@ -1,4 +1,4 @@
-use crate::{Transport, TransportError, UnavailableTransport};
+use crate::{AsyncTransport, Transport, TransportError, UnavailableTransport};
 use spawned_wire::WireEnvelope;
 use std::sync::{Arc, OnceLock};
 
@@ -10,12 +10,27 @@ static DEFAULT_ROUTER: OnceLock<Arc<ClusterRouter>> = OnceLock::new();
 /// this router covers the remote path only.
 pub struct ClusterRouter {
     transport: Arc<dyn Transport>,
+    async_transport: Option<Arc<dyn AsyncTransport>>,
 }
 
 impl ClusterRouter {
     /// Create a router with an explicit transport implementation.
     pub fn new(transport: Arc<dyn Transport>) -> Self {
-        Self { transport }
+        Self {
+            transport,
+            async_transport: None,
+        }
+    }
+
+    /// Create a router with sync and async transport backends.
+    pub fn with_async(
+        transport: Arc<dyn Transport>,
+        async_transport: Option<Arc<dyn AsyncTransport>>,
+    ) -> Self {
+        Self {
+            transport,
+            async_transport,
+        }
     }
 
     /// Router using [`UnavailableTransport`] (returns [`TransportError::RemoteUnreachable`]).
@@ -44,6 +59,21 @@ impl ClusterRouter {
     pub fn request_remote(&self, envelope: WireEnvelope) -> Result<Vec<u8>, TransportError> {
         self.transport.request_envelope(envelope)
     }
+
+    /// Async request/response delivery.
+    pub async fn request_remote_async(
+        &self,
+        envelope: WireEnvelope,
+    ) -> Result<Vec<u8>, TransportError> {
+        if let Some(async_transport) = &self.async_transport {
+            async_transport.request_envelope(envelope).await
+        } else {
+            let transport = self.transport.clone();
+            tokio::task::spawn_blocking(move || transport.request_envelope(envelope))
+                .await
+                .map_err(|_| TransportError::RemoteUnreachable)?
+        }
+    }
 }
 
 #[cfg(test)]
@@ -69,6 +99,21 @@ mod tests {
         .unwrap();
         assert!(matches!(
             router.send_remote(envelope),
+            Err(TransportError::RemoteUnreachable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn async_request_falls_back_to_spawn_blocking() {
+        let router = ClusterRouter::unavailable();
+        let envelope = WireEnvelope::request(
+            ActorAddress::on("remote@host".into(), ActorId::from_raw(1)),
+            &Ping(1),
+            1,
+        )
+        .unwrap();
+        assert!(matches!(
+            router.request_remote_async(envelope).await,
             Err(TransportError::RemoteUnreachable)
         ));
     }
