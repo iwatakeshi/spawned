@@ -29,12 +29,28 @@ impl Default for MailboxConfig {
 }
 
 impl MailboxConfig {
+    /// Default bounded capacity for supervised worker children ([`default_worker`]).
+    pub const DEFAULT_WORKER_CAPACITY: usize = 64;
+
     /// No limit on queued user messages (default).
     pub fn unbounded() -> Self {
         Self {
             capacity: None,
             mode: BackpressureMode::FailFast,
         }
+    }
+
+    /// Bounded fail-fast mailbox for supervised workers ([`DEFAULT_WORKER_CAPACITY`]).
+    pub const fn default_worker() -> Self {
+        Self {
+            capacity: Some(Self::DEFAULT_WORKER_CAPACITY),
+            mode: BackpressureMode::FailFast,
+        }
+    }
+
+    /// Configured capacity, or `None` when unbounded.
+    pub fn capacity(&self) -> Option<usize> {
+        self.capacity
     }
 
     /// Fixed capacity; return [`ActorError::MailboxFull`] when full.
@@ -559,6 +575,10 @@ mod tests {
     #[test]
     fn mailbox_config_constructors() {
         assert!(MailboxConfig::unbounded().capacity.is_none());
+        assert_eq!(
+            MailboxConfig::default_worker().capacity,
+            Some(MailboxConfig::DEFAULT_WORKER_CAPACITY)
+        );
         assert_eq!(MailboxConfig::bounded(8).capacity, Some(8));
         assert_eq!(
             MailboxConfig::bounded_blocking(4).mode,

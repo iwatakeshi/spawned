@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after Phase 9.2 (Application wrapper).
+**Last updated:** after Phase 9.3 (default worker mailbox).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -168,7 +168,6 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 
 | Item | Notes |
 |------|-------|
-| **Default bounded mailbox for workers** | `ChildSpec::worker()` still defaults to unbounded; opt in via `.with_mailbox()` |
 | **Dropping / sliding buffers** | Only fixed capacity with fail-fast or block |
 | **Configurable FIFO mode** | `MailboxConfig::fifo()` to disable system priority |
 
@@ -217,6 +216,11 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 - Optional cluster `Node` via `.name()` / `.listen()` / `.peer()` when `cluster` feature enabled
 - `Application::run()` / `run_blocking()` await root `ChildHandle` exit
 - `examples/http_workers` migrated to `Application` API
+
+### 9.3. Default bounded worker mailbox — shipped
+
+- `ChildSpec::worker()` defaults to `MailboxConfig::default_worker()` (capacity 64, fail-fast)
+- Nested supervisors remain unbounded; override with `.with_mailbox(...)` or `.with_mailbox(MailboxConfig::unbounded())`
 
 | Phase | Focus |
 |-------|--------|

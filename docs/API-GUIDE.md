@@ -605,9 +605,9 @@ use spawned_concurrency::{
 | `RestartIntensity` | `{ max_restarts, within }` — meltdown if exceeded |
 | `SupervisorStrategy` | `OneForOne`, `OneForAll`, `RestForOne` |
 
-**OTP defaults:** `ChildSpec::worker()` uses `DEFAULT_WORKER_SHUTDOWN` (`Timeout(5s)`). Nested supervisors default to `ShutdownType::Infinity`. Override with `.with_shutdown(...)` when a child needs longer cleanup.
+**OTP defaults:** `ChildSpec::worker()` uses `DEFAULT_WORKER_SHUTDOWN` (`Timeout(5s)`) and `MailboxConfig::default_worker()` (bounded capacity 64, fail-fast). Nested supervisors default to `ShutdownType::Infinity` and unbounded mailboxes. Override with `.with_shutdown(...)` / `.with_mailbox(...)` when needed.
 
-**Mailbox limits:** Supervised children default to unbounded mailboxes. Use `.with_mailbox(MailboxConfig::bounded(n))` on `ChildSpec` (static or dynamic) to cap worker queue depth. Restarts inherit the spec's mailbox config. See [Mailbox configuration](#mailbox-configuration).
+**Mailbox limits:** Workers default to bounded mailboxes; supervisors stay unbounded. Restarts inherit the spec's mailbox config. See [Mailbox configuration](#mailbox-configuration).
 
 ### Shutdown orchestration
 

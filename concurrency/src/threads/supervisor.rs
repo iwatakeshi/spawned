@@ -58,7 +58,7 @@ impl ChildSpec {
             restart,
             shutdown: DEFAULT_WORKER_SHUTDOWN,
             child_type: ChildType::Worker,
-            mailbox: MailboxConfig::unbounded(),
+            mailbox: MailboxConfig::default_worker(),
             backoff: RestartBackoff::default(),
         }
     }

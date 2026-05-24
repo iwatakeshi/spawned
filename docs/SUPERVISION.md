@@ -52,7 +52,7 @@ Workers default to `Timeout(5s)` via `DEFAULT_WORKER_SHUTDOWN`. Use `.with_shutd
 
 **Escalation caveat:** `kill()` sets `skip_stopped` but does not interrupt an in-flight message handler or `stopped()` callback. The supervisor keeps waiting until the actor returns to its message loop.
 
-For load-sensitive workers, cap mailbox depth with `.with_mailbox(MailboxConfig::bounded(n))` on the child spec (static or dynamic supervisor). Default remains unbounded; restarts inherit the spec's mailbox config.
+For load-sensitive workers, `ChildSpec::worker()` defaults to a bounded fail-fast mailbox (`MailboxConfig::default_worker()`, capacity 64). Override with `.with_mailbox(...)` — e.g. `.with_mailbox(MailboxConfig::unbounded())` or a custom capacity. Restarts inherit the spec's mailbox config.
 
 **Exit delivery priority:** Link-propagated `Exit` messages bypass user mailbox backpressure (Phase 6b) and are dequeued before queued user messages. Stop/cancellation beats supervision exits when both are queued. OS signals (Ctrl+C / SIGTERM) use the highest-priority channel (Phase 7). Supervisors with `trap_exit(true)` see child deaths promptly even under load.
 
@@ -75,7 +75,7 @@ Registered actors receive a priority shutdown signal (`ExitReason::Shutdown`) wi
 use spawned_concurrency::MailboxConfig;
 
 ChildSpec::worker("api", || ApiServer::new(), RestartType::Permanent)
-    .with_mailbox(MailboxConfig::bounded(64))
+    .with_mailbox(MailboxConfig::bounded(128)) // override default 64
 ```
 
 ### Start closure

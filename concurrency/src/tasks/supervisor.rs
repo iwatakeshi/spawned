@@ -59,7 +59,7 @@ impl ChildSpec {
             restart,
             shutdown: DEFAULT_WORKER_SHUTDOWN,
             child_type: ChildType::Worker,
-            mailbox: MailboxConfig::unbounded(),
+            mailbox: MailboxConfig::default_worker(),
             backoff: RestartBackoff::default(),
         }
     }
@@ -334,6 +334,15 @@ mod tests {
 
     struct Idler;
     impl Actor for Idler {}
+
+    #[test]
+    fn worker_spec_defaults_to_bounded_mailbox() {
+        let spec = ChildSpec::worker("w", || Idler, RestartType::Permanent);
+        assert_eq!(
+            spec.mailbox.capacity(),
+            Some(MailboxConfig::DEFAULT_WORKER_CAPACITY)
+        );
+    }
 
     struct CountingIdler {
         starts: Arc<AtomicUsize>,
