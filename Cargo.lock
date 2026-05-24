@@ -3147,6 +3147,7 @@ version = "0.5.0"
 dependencies = [
  "futures",
  "pin-project-lite",
+ "postcard",
  "serde",
  "spawned-address",
  "spawned-cluster",

@@ -323,12 +323,26 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 - `NodeBuilder` starts broker; wires inbound `SupervisionHooks` and `install_supervision_sync` publish routing
 - `Node::register_supervision` — register local `ChildHandle` for inbound remote signals
 - Inbound `Signal` (Stop / Shutdown / Kill) delivered to registered local actors
-- `SpawnRequest` stub reply until Phase 12.3
 - Integration test: `concurrency/tests/supervision_signal_two_node.rs`
 
 | Phase | Focus |
 |-------|--------|
 | **12.2** | SupervisionBroker + Node wiring — shipped |
+
+### 12.3. Remote spawn (registry + named specs) — shipped
+
+- Process-global remote worker and named-spec registries (`register_remote_worker`, `register_remote_spec`) for tasks and threads
+- `SupervisionBroker` handles inbound `SpawnRequest`: registry dispatch, linked/unlinked start, auto-register, parent map for Phase 12.4
+- `install_supervision_request` + `request_spawn` correlated RPC; `RemoteChildHandle` lifecycle via supervision signals
+- `DynamicSupervisor::start_child_remote` (tasks + threads); `Context::actor_address()` for spawn parent
+- `install_tasks_runtime` — dispatch worker starts from TCP listener threads onto the app runtime
+- Integration test: `concurrency/tests/supervision_spawn_two_node.rs`
+
+Deferred to **12.4**: `ChildExit` propagation, remote restart, `Exit.from` → `ActorAddress`.
+
+| Phase | Focus |
+|-------|--------|
+| **12.3** | Remote spawn registry + DynamicSupervisor API — shipped |
 
 ## Future Considerations
 

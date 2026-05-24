@@ -1,6 +1,8 @@
 //! Per-node supervision broker: inbound wire events and local actor registry.
 
 use crate::child_handle::{ActorId, ChildHandle};
+use crate::cluster::remote_spawn;
+use crate::link::Exit;
 use spawned_address::{ActorAddress, NodeId};
 use spawned_cluster::{
     SupervisionEnvelope, SupervisionEvent, SupervisionSignal, TransportError,
@@ -13,6 +15,9 @@ use std::sync::{Arc, RwLock};
 pub struct SupervisionBrokerInner {
     local: NodeId,
     handles: RwLock<HashMap<ActorId, ChildHandle>>,
+    /// Remote parent address for each locally spawned child (Phase 12.4 ChildExit).
+    parents: RwLock<HashMap<ActorId, ActorAddress>>,
+    broker_handle: RwLock<Option<ChildHandle>>,
 }
 
 impl SupervisionBrokerInner {
@@ -20,11 +25,17 @@ impl SupervisionBrokerInner {
         Self {
             local,
             handles: RwLock::new(HashMap::new()),
+            parents: RwLock::new(HashMap::new()),
+            broker_handle: RwLock::new(None),
         }
     }
 
     pub fn local_node(&self) -> &NodeId {
         &self.local
+    }
+
+    pub(crate) fn set_broker_handle(&self, handle: ChildHandle) {
+        *self.broker_handle.write().unwrap_or_else(|p| p.into_inner()) = Some(handle);
     }
 
     /// Register a locally-running actor for inbound supervision signals.
@@ -54,6 +65,10 @@ impl SupervisionBrokerInner {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&actor_id);
+        self.parents
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&actor_id);
     }
 
     /// Handle an inbound supervision envelope on this node.
@@ -66,13 +81,71 @@ impl SupervisionBrokerInner {
                 self.apply_signal(&target, signal)?;
                 Ok(None)
             }
-            SupervisionEvent::SpawnRequest { .. } => Ok(Some(SupervisionEnvelope {
-                correlation_id: envelope.correlation_id,
-                event: SupervisionEvent::SpawnErr {
-                    error: "remote spawn not implemented".into(),
-                },
-            })),
+            SupervisionEvent::SpawnRequest {
+                parent,
+                placement,
+                spec,
+                link,
+            } => self.apply_spawn(envelope.correlation_id, parent, placement, spec, link),
             _ => Ok(None),
+        }
+    }
+
+    fn apply_spawn(
+        &self,
+        correlation_id: u64,
+        parent: ActorAddress,
+        placement: NodeId,
+        spec: spawned_cluster::RemoteSpawnSpec,
+        link: bool,
+    ) -> Result<Option<SupervisionEnvelope>, TransportError> {
+        if placement != self.local {
+            return Ok(Some(SupervisionEnvelope {
+                correlation_id,
+                event: SupervisionEvent::SpawnErr {
+                    error: format!(
+                        "placement node {placement} does not match local node {}",
+                        self.local
+                    ),
+                },
+            }));
+        }
+
+        let broker_parent = if link {
+            self.broker_handle
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+        } else {
+            None
+        };
+
+        if link && broker_parent.is_none() {
+            return Ok(Some(SupervisionEnvelope {
+                correlation_id,
+                event: SupervisionEvent::SpawnErr {
+                    error: "supervision broker not ready".into(),
+                },
+            }));
+        }
+
+        match remote_spawn::spawn_local(spec, link, broker_parent.as_ref()) {
+            Ok(handle) => {
+                let child = ActorAddress::on(self.local.clone(), handle.id());
+                self.register(child.clone(), handle.clone())?;
+                self.parents
+                    .write()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(child.actor_id, parent);
+                Ok(Some(SupervisionEnvelope {
+                    correlation_id,
+                    event: SupervisionEvent::SpawnOk { child },
+                }))
+            }
+            Err(error) => Ok(Some(SupervisionEnvelope {
+                correlation_id,
+                event: SupervisionEvent::SpawnErr { error },
+            })),
         }
     }
 
@@ -119,9 +192,19 @@ impl SupervisionBroker {
     }
 }
 
-use crate::tasks::{Actor, ActorStart};
+use crate::tasks::{Actor, ActorStart, Context, Handler};
 
-impl Actor for SupervisionBroker {}
+impl Actor for SupervisionBroker {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        ctx.trap_exit(true);
+        self.inner.set_broker_handle(ctx.child_handle());
+    }
+
+    async fn exit_received(&mut self, exit: Exit, _ctx: &Context<Self>) {
+        let _ = exit;
+        // ChildExit propagation to remote parent — Phase 12.4.
+    }
+}
 
 /// Start the tasks supervision broker and return its handle + shared inner state.
 pub fn start_supervision_broker(
@@ -142,7 +225,7 @@ pub fn start_supervision_broker(
 mod tests {
     use super::*;
     use crate::message::Message;
-    use crate::tasks::{Actor, ActorStart, Context, Handler};
+    use crate::tasks::{Handler};
 
     struct Target;
 

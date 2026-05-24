@@ -207,6 +207,11 @@ impl<A: Actor> Context<A> {
         self.id
     }
 
+    /// This actor's cluster address on the local node.
+    pub fn actor_address(&self) -> spawned_address::ActorAddress {
+        spawned_address::ActorAddress::local(self.id)
+    }
+
     /// Signal the actor to stop. The current handler will finish, then
     /// `stopped()` is called and the actor exits.
     pub fn stop(&self) {

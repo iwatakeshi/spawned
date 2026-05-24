@@ -3,6 +3,7 @@ mod child_spec;
 pub mod dynamic_supervisor;
 pub mod pg;
 pub mod pool;
+pub mod remote_spawn;
 mod stream;
 mod supervisor;
 mod time;
@@ -21,6 +22,7 @@ pub use actor::{
 pub use child_spec::ChildSpec;
 pub use dynamic_supervisor::{DynamicSupervisor, DynamicSupervisorApi, DynamicSupervisorBuilder};
 pub use pool::{ActorPool, ActorPoolBuilder};
+pub use remote_spawn::{register_remote_spec, register_remote_worker};
 pub use stream::spawn_listener;
 pub use supervisor::{Supervisor, SupervisorBuilder};
 pub use time::{send_after, send_interval, TimerHandle};

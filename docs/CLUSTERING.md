@@ -240,9 +240,37 @@ Each cluster node runs a **SupervisionBroker** actor that handles inbound superv
 - `NodeBuilder` starts the broker when listen/peer is configured and wires `ControlPlaneHooks::with_supervision`
 - `install_supervision_sync` routes outbound envelopes unicast via `TcpTransport::send_supervision` / `Libp2pCluster::send_supervision_to`
 - `Node::register_supervision(address, child_handle)` registers local actors for inbound `Signal` delivery
-- `SpawnRequest` returns `SpawnErr("remote spawn not implemented")` until Phase 12.3
 
 Integration test: `concurrency/tests/supervision_signal_two_node.rs` (remote `Signal::Shutdown`).
+
+### Phase 12.3: Remote spawn (shipped)
+
+Remote child spawn closes the loop: a supervisor on node A can start a worker on node B and receive a [`RemoteChildHandle`](../../concurrency/src/cluster/remote_spawn.rs).
+
+**Registries** (process-global, separate tasks/threads tables):
+
+```rust
+register_remote_worker::<Counter, CounterInit>("spawned.Counter/v1", |init| Counter { .. })?;
+register_remote_spec("api_worker", || ChildSpec::worker("api", || ApiServer::new(), RestartType::Permanent))?;
+```
+
+**Broker inbound `SpawnRequest`:**
+
+1. Validate `placement == local`
+2. Resolve worker type or named spec from registry
+3. Start linked to broker (`link = true`) or unlinked
+4. Auto-register `ChildHandle` for remote signals; record `(child → parent)` for Phase 12.4
+
+**Client API:**
+
+- `DynamicSupervisor::start_child_remote(spec, placement)` → `RemoteChildHandle`
+- `RemoteChildHandle::shutdown` / `stop` / `kill` via supervision publish
+- `install_supervision_request` + `request_spawn` for correlated spawn RPC
+- `install_tasks_runtime(Handle::current())` when using a manual TCP listener (worker node without `Node::builder`)
+
+Interim linking: `link = true` links the child to the **placement node's broker**; true cross-node link arrives in Phase 12.6.
+
+Integration test: `concurrency/tests/supervision_spawn_two_node.rs`.
 
 ### Clustering checklist (every feature PR)
 
@@ -250,7 +278,7 @@ Integration test: `concurrency/tests/supervision_signal_two_node.rs` (remote `Si
 2. **Serializable boundary** — Cross-node messages implement `RemoteMessage`. Control plane (`Exit`, stop, OS signals) stays local.
 3. **Registry names are global** — Named registration implies cluster-wide uniqueness (federation in Phase 10).
 4. **pg members are addresses** — Internal pg keys use `ActorAddress`; local join fills in `local_node()`.
-5. **Supervision signals** — Register local actors with `Node::register_supervision` for remote stop/shutdown/kill; remote spawn arrives in Phase 12.3.
+5. **Supervision signals** — Register local actors with `Node::register_supervision` for remote stop/shutdown/kill; remote spawn via `register_remote_worker` / `DynamicSupervisor::start_child_remote` (Phase 12.3).
 6. **Threads mode** — Address/wire types are sync-safe; remote I/O may delegate to a cluster runtime (tasks MVP first).
 
 ## Roadmap (summary)
@@ -269,5 +297,6 @@ Integration test: `concurrency/tests/supervision_signal_two_node.rs` (remote `Si
 | **11.2** | Async remote requests (this document) |
 | **12.1** | Supervision control plane protocol (this document) |
 | **12.2** | SupervisionBroker + Node wiring (this document) |
+| **12.3** | Remote spawn registry + DynamicSupervisor API (this document) |
 
 See [ROADMAP.md](ROADMAP.md) for full detail.

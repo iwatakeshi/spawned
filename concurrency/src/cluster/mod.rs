@@ -8,6 +8,7 @@ mod node;
 mod pg_sync;
 mod registry_sync;
 mod remote_actor_ref;
+pub(crate) mod remote_spawn;
 mod supervision_broker;
 mod supervision_routing;
 mod supervision_sync;
@@ -20,9 +21,12 @@ pub use named_registry::{
 pub use node::{Node, NodeBuilder, NodeError};
 pub use pg_sync::install_pg_sync;
 pub use registry_sync::install_registry_sync;
+pub use remote_spawn::{
+    install_tasks_runtime, request_spawn, Placement, RemoteChildHandle, RemoteSpawnError,
+};
 pub use supervision_broker::{start_supervision_broker, SupervisionBroker, SupervisionBrokerInner};
 pub use supervision_routing::{publish_routed, route_node};
-pub use supervision_sync::install_supervision_sync;
+pub use supervision_sync::{install_supervision_request, install_supervision_sync};
 pub use remote_actor_ref::{RemoteActorRef, RemoteRequest};
 pub use wire_dispatch::{tasks_wire_dispatch, threads_wire_dispatch};
 

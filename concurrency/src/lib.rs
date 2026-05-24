@@ -79,13 +79,17 @@ pub use supervisor::SupervisorStrategy;
 
 #[cfg(feature = "cluster")]
 pub use cluster::{
-    apply_remote_pg_event, install_pg_sync, local_pg_snapshot, lookup_address, lookup_handle,
-    register_named, unregister_named, tasks_wire_dispatch, threads_wire_dispatch, AsyncTransport,
-    ClusterRouter, ControlPlaneHooks, InboundDispatch, NamedRegistryError, Node, NodeBuilder,
-    NodeError, PgEvent, PgMemberEntry, RemoteActorRef, RemoteRequest, TcpAsyncTransport,
+    apply_remote_pg_event, install_pg_sync, install_supervision_request, install_tasks_runtime,
+    local_pg_snapshot, lookup_address, lookup_handle, register_named, unregister_named, tasks_wire_dispatch,
+    threads_wire_dispatch, AsyncTransport, ClusterRouter, ControlPlaneHooks, InboundDispatch,
+    NamedRegistryError, Node, NodeBuilder, NodeError, PgEvent, PgMemberEntry, Placement,
+    RemoteActorRef, RemoteChildHandle, RemoteRequest, RemoteSpawnError, TcpAsyncTransport,
     TcpClusterListener, TcpTransport, Transport, TransportError, UnavailableTransport, WireReply,
     PROTOCOL_VERSION,
 };
+
+#[cfg(feature = "cluster")]
+pub use tasks::{register_remote_spec, register_remote_worker};
 
 #[cfg(feature = "cluster-libp2p")]
 pub use cluster::{identity, Libp2pCluster, Libp2pPeer, Multiaddr, PeerId, LIBP2P_CLUSTER_PROTOCOL};

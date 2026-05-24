@@ -293,6 +293,9 @@ impl NodeBuilder {
         }
 
         let local = local_node();
+        if let Ok(handle) = spawned_rt::tasks::Handle::try_current() {
+            super::remote_spawn::install_tasks_runtime(handle);
+        }
         let dispatch = Arc::new(AddressDispatch::new());
 
         let cluster_active = {
@@ -383,13 +386,17 @@ impl NodeBuilder {
                 let local_sup = local.clone();
                 let inner_sup = inner.clone();
                 let tcp_sup = tcp.clone();
-                super::supervision_sync::install(move |envelope| {
+                super::supervision_sync::install_publish(move |envelope| {
                     let _ = super::supervision_routing::publish_routed(
                         &local_sup,
                         envelope,
                         |env| inner_sup.apply(env).map(|_| ()),
                         |node, env| tcp_sup.send_supervision(&node, env),
                     );
+                });
+                let tcp_req = tcp.clone();
+                super::supervision_sync::install_request(move |node, envelope| {
+                    tcp_req.request_supervision(node, envelope)
                 });
             }
         }
@@ -502,13 +509,17 @@ impl NodeBuilder {
             let local_sup = local.clone();
             let inner_sup = inner.clone();
             let cluster_sup = cluster.clone();
-            super::supervision_sync::install(move |envelope| {
+            super::supervision_sync::install_publish(move |envelope| {
                 let _ = super::supervision_routing::publish_routed(
                     &local_sup,
                     envelope,
                     |env| inner_sup.apply(env).map(|_| ()),
                     |node, env| cluster_sup.send_supervision_to(&node, env),
                 );
+            });
+            let cluster_req = cluster.clone();
+            super::supervision_sync::install_request(move |node, envelope| {
+                cluster_req.request_supervision_from(node, envelope)
             });
         }
 

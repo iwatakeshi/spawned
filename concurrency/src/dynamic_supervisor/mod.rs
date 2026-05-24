@@ -14,6 +14,8 @@ pub enum DynamicSupervisorError {
     SupervisorStopping,
     #[error("registry error: {0}")]
     Registry(String),
+    #[error("remote spawn error: {0}")]
+    RemoteSpawn(String),
 }
 
 /// Runtime metadata for a dynamically supervised child.

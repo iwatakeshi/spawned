@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use crate::child_handle::{ActorId, ChildHandle};
 use crate::child_spec::{
-    shutdown_child_async, RestartBackoff, RestartIntensity, ShutdownType,
+    shutdown_child_async, RestartBackoff, RestartIntensity, RestartType, ShutdownType,
 };
 use crate::dynamic_supervisor::{instance_id, DynamicChildInfo, DynamicSupervisorError};
 use crate::link::Exit;
@@ -13,6 +13,13 @@ use crate::response::Response;
 use crate::supervisor::{
     ChildHandleSlot, ChildPolicy, SupervisorAction, SupervisorLogic, SupervisorStrategy,
 };
+
+#[cfg(feature = "cluster")]
+use crate::cluster::{request_spawn, RemoteChildHandle};
+#[cfg(feature = "cluster")]
+use spawned_address::NodeId;
+#[cfg(feature = "cluster")]
+use spawned_cluster::RemoteSpawnSpec;
 
 use super::actor::{Actor, ActorRef, ActorStart, Context, Handler};
 
@@ -52,6 +59,10 @@ impl DynamicSupervisorBuilder {
             id_counter: 0,
             max_children: self.max_children,
             stopping: false,
+            #[cfg(feature = "cluster")]
+            remote_handles: HashMap::new(),
+            #[cfg(feature = "cluster")]
+            remote_actor_to_id: HashMap::new(),
         }
         .start()
     }
@@ -73,6 +84,10 @@ pub struct DynamicSupervisor {
     id_counter: u64,
     max_children: Option<usize>,
     stopping: bool,
+    #[cfg(feature = "cluster")]
+    remote_handles: HashMap<String, RemoteChildHandle>,
+    #[cfg(feature = "cluster")]
+    remote_actor_to_id: HashMap<ActorId, String>,
 }
 
 /// Request to start a child at runtime.
@@ -108,6 +123,19 @@ impl crate::message::Message for WhichChildren {
     type Result = Vec<DynamicChildInfo>;
 }
 
+/// Request to start a child on a remote node.
+#[cfg(feature = "cluster")]
+pub struct StartChildRemote {
+    pub spec: RemoteSpawnSpec,
+    pub placement: NodeId,
+    pub link: bool,
+}
+
+#[cfg(feature = "cluster")]
+impl crate::message::Message for StartChildRemote {
+    type Result = Result<RemoteChildHandle, DynamicSupervisorError>;
+}
+
 /// Convenience API on [`ActorRef<DynamicSupervisor>`].
 pub trait DynamicSupervisorApi {
     fn start_child(
@@ -121,6 +149,13 @@ pub trait DynamicSupervisorApi {
     fn count_children(&self) -> Response<usize>;
 
     fn which_children(&self) -> Response<Vec<DynamicChildInfo>>;
+
+    #[cfg(feature = "cluster")]
+    fn start_child_remote(
+        &self,
+        spec: RemoteSpawnSpec,
+        placement: NodeId,
+    ) -> Response<Result<RemoteChildHandle, DynamicSupervisorError>>;
 }
 
 impl DynamicSupervisorApi for ActorRef<DynamicSupervisor> {
@@ -142,6 +177,19 @@ impl DynamicSupervisorApi for ActorRef<DynamicSupervisor> {
 
     fn which_children(&self) -> Response<Vec<DynamicChildInfo>> {
         Response::from(self.request_raw(WhichChildren))
+    }
+
+    #[cfg(feature = "cluster")]
+    fn start_child_remote(
+        &self,
+        spec: RemoteSpawnSpec,
+        placement: NodeId,
+    ) -> Response<Result<RemoteChildHandle, DynamicSupervisorError>> {
+        Response::from(self.request_raw(StartChildRemote {
+            spec,
+            placement,
+            link: true,
+        }))
     }
 }
 
@@ -200,6 +248,57 @@ impl DynamicSupervisor {
         Ok(handle)
     }
 
+    #[cfg(feature = "cluster")]
+    async fn start_child_remote(
+        &mut self,
+        ctx: &Context<Self>,
+        spec: RemoteSpawnSpec,
+        placement: NodeId,
+        link: bool,
+    ) -> Result<RemoteChildHandle, DynamicSupervisorError> {
+        if self.stopping {
+            return Err(DynamicSupervisorError::SupervisorStopping);
+        }
+
+        if let Some(max) = self.max_children {
+            if self.logic.child_count() >= max {
+                return Err(DynamicSupervisorError::MaxChildrenExceeded);
+            }
+        }
+
+        self.id_counter += 1;
+        let child_id = instance_id("remote", self.id_counter);
+        if self.logic.has_child_id(&child_id) {
+            return Err(DynamicSupervisorError::DuplicateChildId(child_id));
+        }
+
+        let parent = ctx.actor_address();
+        let address = spawned_rt::tasks::spawn_blocking(move || {
+            request_spawn(&placement, parent, spec, link)
+        })
+        .await
+        .map_err(|_| DynamicSupervisorError::RemoteSpawn("spawn task failed".into()))?
+        .map_err(|e| DynamicSupervisorError::RemoteSpawn(e.to_string()))?;
+
+        let remote = RemoteChildHandle::new(address.clone(), ctx.actor_address());
+        let start_index = self.logic.next_start_index();
+        self.logic.register_child(
+            ChildPolicy {
+                id: child_id.clone(),
+                restart: RestartType::Permanent,
+                start_index,
+            },
+            ChildHandleSlot {
+                id: address.actor_id,
+                alive: true,
+            },
+        );
+        self.remote_handles.insert(child_id.clone(), remote.clone());
+        self.remote_actor_to_id
+            .insert(address.actor_id, child_id);
+        Ok(remote)
+    }
+
     fn restart_child(&mut self, ctx: &Context<Self>, child_id: &str) {
         let Some(spec) = self.specs.get(child_id).cloned() else {
             return;
@@ -239,6 +338,18 @@ impl DynamicSupervisor {
         &mut self,
         actor_id: ActorId,
     ) -> Result<(), DynamicSupervisorError> {
+        #[cfg(feature = "cluster")]
+        if let Some(child_id) = self.remote_actor_to_id.get(&actor_id).cloned() {
+            if let Some(remote) = self.remote_handles.remove(&child_id) {
+                remote.shutdown().map_err(|e| {
+                    DynamicSupervisorError::RemoteSpawn(e.to_string())
+                })?;
+                self.remote_actor_to_id.remove(&actor_id);
+                self.logic.remove_child_by_id(&child_id);
+                return Ok(());
+            }
+        }
+
         let Some(child_id) = self.actor_to_id.get(&actor_id).cloned() else {
             return Err(DynamicSupervisorError::ChildNotFound(actor_id));
         };
@@ -325,6 +436,14 @@ impl Actor for DynamicSupervisor {
         self.specs.clear();
         self.handles.clear();
         self.actor_to_id.clear();
+        #[cfg(feature = "cluster")]
+        {
+            for remote in self.remote_handles.values() {
+                let _ = remote.shutdown();
+            }
+            self.remote_handles.clear();
+            self.remote_actor_to_id.clear();
+        }
         for name in self.reg_names.keys().cloned().collect::<Vec<_>>() {
             registry::unregister(&name);
         }
@@ -339,6 +458,18 @@ impl Handler<StartChild> for DynamicSupervisor {
         ctx: &Context<Self>,
     ) -> Result<ChildHandle, DynamicSupervisorError> {
         self.start_child(ctx, msg.spec, msg.reg_name)
+    }
+}
+
+#[cfg(feature = "cluster")]
+impl Handler<StartChildRemote> for DynamicSupervisor {
+    async fn handle(
+        &mut self,
+        msg: StartChildRemote,
+        ctx: &Context<Self>,
+    ) -> Result<RemoteChildHandle, DynamicSupervisorError> {
+        self.start_child_remote(ctx, msg.spec, msg.placement, msg.link)
+            .await
     }
 }
 
