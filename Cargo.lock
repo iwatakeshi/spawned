@@ -200,6 +200,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cluster_ping_pong"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "spawned-address",
+ "spawned-concurrency",
+ "spawned-rt",
+ "spawned-wire",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

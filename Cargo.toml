@@ -28,6 +28,7 @@ members = [
     "examples/pg_workers",
     "examples/mailbox_backpressure",
     "examples/http_workers",
+    "examples/cluster_ping_pong",
 ]
 
 [workspace.dependencies]

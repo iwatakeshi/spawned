@@ -66,7 +66,32 @@ spawned-concurrency = { version = "...", features = ["cluster"] }
 - **`RemoteActorRef<M>`** — local `Recipient` when attached, else transport
 - **Named registry** — `register_named`, `lookup_address`, `lookup_handle`, `unregister_named`
 
-## Phase 8c (current): TCP transport
+## Phase 8d (current): Node bootstrap
+
+`NodeBuilder` is the standard entry point for cluster-aware apps (requires `cluster` feature):
+
+```rust
+use spawned_concurrency::Node;
+use std::net::SocketAddr;
+
+let node = Node::builder()
+    .name("worker@10.0.0.5")
+    .listen("0.0.0.0:9000".parse::<SocketAddr>()?)
+    .peer("peer@10.0.0.2", "10.0.0.2:9000".parse()?)
+    .shutdown_on_signal(&[sup.child_handle()])
+    .build()?;
+
+node.register_tasks_wire(ActorAddress::local(actor.id()), actor.recipient());
+```
+
+- Installs the process-global [`ClusterRouter`] with [`TcpTransport`] when peers are configured
+- Starts [`TcpClusterListener`] when `listen` is set; routes via [`AddressDispatch`]
+- Spawns the OS signal dispatcher and registers shutdown handles when provided
+- Example: `examples/cluster_ping_pong` (two-terminal demo)
+
+For signal-only bootstrap (no cluster TCP), omit `listen` / `peer` — see `examples/http_workers`.
+
+## Phase 8c: TCP transport
 
 - **Length-framed TCP** — u32 big-endian + postcard payload; handshake (`PROTOCOL_VERSION`, `NodeId`)
 - **`TcpTransport`** — client-side `Transport` with peer `SocketAddr` map and connection pooling
@@ -109,8 +134,8 @@ remote.send(Ping { n: 1 })?;
 |-------|--------|
 | **8a** | Address + wire + pg refactor |
 | **8b** | `ClusterRouter`, `RemoteActorRef`, registry hooks |
-| **8c** | TCP transport + two-node test (this document) |
-| **8d** | `Node` / `Application` bootstrap |
+| **8c** | TCP transport + two-node test |
+| **8d** | `Node` bootstrap (this document) |
 | **9** | Cluster-safe parity: backoff, pg scopes, pools, unified ChildSpec |
 | **10** | Federated registry, distributed pg, libp2p transport |
 

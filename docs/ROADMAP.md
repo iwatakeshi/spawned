@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after Phase 8c (TCP transport MVP).
+**Last updated:** after Phase 8d (Node bootstrap).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -197,11 +197,17 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 - `tasks_wire_dispatch` / `threads_wire_dispatch` for inbound actor delivery
 - Two-node integration tests in `spawned-cluster`
 
-### 8d–10 (planned)
+### 8d. Node bootstrap — shipped
+
+- `Node::builder()` — name, listen, peers, `shutdown_on_signal`
+- `AddressDispatch` for multi-actor inbound routing
+- `examples/cluster_ping_pong` two-node demo
+- `examples/http_workers` migrated to signal-only `Node` bootstrap
+
+### 9–10 (planned)
 
 | Phase | Focus |
 |-------|--------|
-| **8d** | `Node` / `Application` bootstrap (Kameo `bootstrap` parity, OTP-shaped) |
 | **9** | Cluster-safe Kameo parity: backoff, pg scopes, pools, unified ChildSpec |
 | **10** | Federated registry, distributed pg, libp2p transport |
 

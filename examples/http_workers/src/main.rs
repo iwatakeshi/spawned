@@ -9,10 +9,10 @@ use serde::Serialize;
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::message::Message;
 use spawned_concurrency::tasks::{
-    Actor, Context, DynamicSupervisor, DynamicSupervisorApi, Handler,
-    dynamic_supervisor::ChildSpec, pg, spawn_shutdown_signal_dispatcher,
+    dynamic_supervisor::ChildSpec, pg, Actor, Context, DynamicSupervisor, DynamicSupervisorApi,
+    Handler,
 };
-use spawned_concurrency::{MailboxConfig, RestartType, register_shutdown_on_signal};
+use spawned_concurrency::{MailboxConfig, Node, RestartType};
 use spawned_rt::tasks as rt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -155,8 +155,11 @@ fn main() {
         println!("Burst POST /work to observe 503 when mailboxes fill.");
         println!("Press Ctrl+C or send SIGTERM to stop.\n");
 
-        spawn_shutdown_signal_dispatcher();
-        let _signal_guards = register_shutdown_on_signal(&[sup.child_handle()]);
+        let node = Node::builder()
+            .shutdown_on_signal(&[sup.child_handle()])
+            .build()
+            .expect("start node");
+        let _node = node;
 
         rt::spawn(async move {
             if let Err(err) = axum::serve(listener, app).await {
