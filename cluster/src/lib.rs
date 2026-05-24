@@ -14,6 +14,8 @@ mod registry;
 mod router;
 mod transport;
 mod tcp;
+#[cfg(feature = "libp2p")]
+mod libp2p;
 
 pub use control::ControlPlaneHooks;
 pub use dispatch::AddressDispatch;
@@ -25,3 +27,5 @@ pub use registry::{RegistryHooks, RegistryInbound, RegistrySnapshot};
 pub use router::ClusterRouter;
 pub use tcp::{TcpClusterListener, TcpTransport};
 pub use transport::{Transport, UnavailableTransport};
+#[cfg(feature = "libp2p")]
+pub use libp2p::{Libp2pCluster, Libp2pPeer, CLUSTER_PROTOCOL as LIBP2P_CLUSTER_PROTOCOL};

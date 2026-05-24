@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+libp2p = ["dep:libp2p", "dep:tokio", "dep:futures", "dep:async-trait"]
+
 [dependencies]
 spawned-address = { workspace = true }
 spawned-wire = { workspace = true }
@@ -13,6 +17,10 @@ thiserror = "2.0.12"
 tracing = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1.0", features = ["alloc"] }
+libp2p = { version = "0.56", optional = true, features = ["tokio", "tcp", "noise", "yamux", "request-response", "macros"] }
+tokio = { version = "1", optional = true, features = ["rt", "time", "macros"] }
+futures = { version = "0.3", optional = true }
+async-trait = { version = "0.1", optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -140,6 +140,47 @@ let remote = RemoteActorRef::<Ping>::remote(target_address, router);
 remote.send(Ping { n: 1 })?;
 ```
 
+## Phase 10.3: libp2p transport
+
+Optional feature on `spawned-cluster` — same `ClusterFrame` wire format as TCP, carried over libp2p request-response (`/spawned/cluster/2`).
+
+```toml
+spawned-cluster = { version = "...", features = ["libp2p"] }
+```
+
+```rust
+use libp2p::{identity, Multiaddr, PeerId};
+use spawned_cluster::{ClusterRouter, ControlPlaneHooks, Libp2pCluster, Libp2pPeer};
+use std::sync::Arc;
+
+let keypair = identity::Keypair::generate_ed25519();
+let listen: Multiaddr = "/ip4/0.0.0.0/tcp/9000".parse()?;
+let peers = vec![Libp2pPeer {
+    node: remote_node,
+    peer_id: remote_peer_id,
+    addr: format!("/ip4/10.0.0.2/tcp/9000/p2p/{remote_peer_id}").parse()?,
+}];
+
+let cluster = Libp2pCluster::start(
+    keypair,
+    local_node,
+    listen,
+    peers,
+    dispatch,
+    ControlPlaneHooks::federated(/* registry + pg hooks */),
+)?;
+
+cluster.sync_peers()?;
+let router = Arc::new(ClusterRouter::new(Arc::new(cluster)));
+```
+
+- Static peer map (like TCP `HashMap<NodeId, SocketAddr>`): each peer needs `NodeId`, `PeerId`, and dialable `Multiaddr`
+- Background OS thread runs the libp2p swarm; `Transport` methods are sync (use `spawn_blocking` from async tests)
+- Control-plane snapshots exchange on connect; actor replies are `WireReply` bytes (not `ClusterFrame`)
+- Integration test: `cargo test -p spawned-cluster --features libp2p --test libp2p_two_node`
+
+`NodeBuilder` remains TCP-only today; use `Libp2pCluster` directly for libp2p nodes.
+
 ### Clustering checklist (every feature PR)
 
 1. **Address, not local id** — Public handles that may be grouped or looked up use `ActorAddress`.
@@ -160,6 +201,6 @@ remote.send(Ping { n: 1 })?;
 | **9** | Cluster-safe parity: backoff, pg scopes, pools, unified ChildSpec |
 | **10.1** | Federated registry (this document) |
 | **10.2** | Distributed pg (this document) |
-| **10.3** | libp2p transport |
+| **10.3** | libp2p transport (this document) |
 
 See [ROADMAP.md](ROADMAP.md) for full detail.
