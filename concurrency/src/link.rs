@@ -1,5 +1,6 @@
 use crate::child_handle::{ActorId, ChildHandle};
 use crate::error::{ActorError, ExitReason};
+use spawned_address::ActorAddress;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -17,7 +18,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone, PartialEq)]
 pub struct Exit {
     /// The actor that died.
-    pub from: ActorId,
+    pub from: ActorAddress,
     /// Why it stopped.
     pub reason: ExitReason,
 }
@@ -101,7 +102,7 @@ pub(crate) fn make_signal(
         if trapping {
             // Send Exit message to the peer's mailbox
             let exit = Exit {
-                from: sender_id,
+                from: ActorAddress::local(sender_id),
                 reason,
             };
             let _ = peer_send_exit(exit); // mailbox may be closed if peer just died
@@ -244,7 +245,7 @@ mod tests {
     #[test]
     fn exit_is_clone_and_eq() {
         let e1 = Exit {
-            from: ActorId::next(),
+            from: ActorAddress::local(ActorId::next()),
             reason: ExitReason::Normal,
         };
         let e2 = e1.clone();

@@ -1955,7 +1955,7 @@ mod tests {
             assert!(b.exit_reason().is_none());
             let exits = b.request(GetExits).await.unwrap();
             assert_eq!(exits.len(), 1);
-            assert_eq!(exits[0].from, a.id());
+            assert_eq!(exits[0].from.actor_id, a.id());
             assert!(matches!(exits[0].reason, ExitReason::Panic(_)));
 
             // Clean up

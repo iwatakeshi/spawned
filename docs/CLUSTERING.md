@@ -272,6 +272,20 @@ Interim linking: `link = true` links the child to the **placement node's broker*
 
 Integration test: `concurrency/tests/supervision_spawn_two_node.rs`.
 
+### Phase 12.4: ChildExit propagation + remote restart (shipped)
+
+When a remotely spawned linked child dies on the placement node:
+
+1. Placement-node broker receives the link exit (via `trap_exit`)
+2. Looks up remote parent in the `parents` map
+3. Publishes `ChildExit { child, parent, reason }` to the parent's node
+4. Home-node broker delivers `Exit { from: child_address, reason }` to the registered supervisor
+5. `DynamicSupervisor` applies restart policy and re-issues `SpawnRequest` using stored spawn metadata
+
+`Exit.from` is now an `ActorAddress` (not bare `ActorId`). Supervisors auto-register with the local broker in `started()` when the `cluster` feature is enabled.
+
+Integration test: `concurrency/tests/supervision_exit_two_node.rs` (remote stop → ChildExit → restart).
+
 ### Clustering checklist (every feature PR)
 
 1. **Address, not local id** — Public handles that may be grouped or looked up use `ActorAddress`.
@@ -298,5 +312,6 @@ Integration test: `concurrency/tests/supervision_spawn_two_node.rs`.
 | **12.1** | Supervision control plane protocol (this document) |
 | **12.2** | SupervisionBroker + Node wiring (this document) |
 | **12.3** | Remote spawn registry + DynamicSupervisor API (this document) |
+| **12.4** | ChildExit propagation + remote restart (this document) |
 
 See [ROADMAP.md](ROADMAP.md) for full detail.

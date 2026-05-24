@@ -338,11 +338,23 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 - `install_tasks_runtime` — dispatch worker starts from TCP listener threads onto the app runtime
 - Integration test: `concurrency/tests/supervision_spawn_two_node.rs`
 
-Deferred to **12.4**: `ChildExit` propagation, remote restart, `Exit.from` → `ActorAddress`.
+Deferred to **12.5+**: cross-node monitor/link, static supervisor `ChildSpec::placement` (12.7).
 
 | Phase | Focus |
 |-------|--------|
 | **12.3** | Remote spawn registry + DynamicSupervisor API — shipped |
+
+### 12.4. ChildExit propagation + remote restart — shipped
+
+- `Exit.from` migrated to `ActorAddress` (cluster-aware child identity)
+- `SupervisionBroker` emits `ChildExit` on linked remote-spawn child death; inbound delivery via `apply_child_exit`
+- `register_supervision_actor` — supervisors auto-register for ChildExit delivery
+- `DynamicSupervisor` stores remote spawn metadata and re-spawns via `request_spawn` on restart
+- Integration test: `concurrency/tests/supervision_exit_two_node.rs`
+
+| Phase | Focus |
+|-------|--------|
+| **12.4** | ChildExit propagation + remote restart — shipped |
 
 ## Future Considerations
 

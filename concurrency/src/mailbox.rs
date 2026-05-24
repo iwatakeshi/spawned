@@ -1,5 +1,6 @@
 use crate::error::ActorError;
 use crate::link::Exit;
+use spawned_address::ActorAddress;
 use spawned_rt::tasks::Notify;
 use spawned_rt::OsSignal;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -600,7 +601,7 @@ mod tests {
         tx.user.send(2).unwrap();
         tx.supervision
             .send(Exit {
-                from: crate::child_handle::ActorId::next(),
+                from: ActorAddress::local(crate::child_handle::ActorId::next()),
                 reason: crate::error::ExitReason::Normal,
             })
             .unwrap();
@@ -624,7 +625,7 @@ mod tests {
         let (tx, mut rx) = ThreadsMailboxReceiver::<u32>::channel();
         tx.supervision
             .send(Exit {
-                from: crate::child_handle::ActorId::next(),
+                from: ActorAddress::local(crate::child_handle::ActorId::next()),
                 reason: crate::error::ExitReason::Normal,
             })
             .unwrap();

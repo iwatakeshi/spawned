@@ -2,13 +2,37 @@
 
 use crate::child_handle::{ActorId, ChildHandle};
 use crate::cluster::remote_spawn;
+use crate::cluster::supervision_exit::{child_exit_envelope, wire_to_exit_reason};
 use crate::link::Exit;
 use spawned_address::{ActorAddress, NodeId};
 use spawned_cluster::{
-    SupervisionEnvelope, SupervisionEvent, SupervisionSignal, TransportError,
+    SupervisionEnvelope, SupervisionEvent, SupervisionSignal, TransportError, WireExitReason,
 };
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
+
+static BROKER: OnceLock<RwLock<Option<Arc<SupervisionBrokerInner>>>> = OnceLock::new();
+
+fn broker_slot() -> &'static RwLock<Option<Arc<SupervisionBrokerInner>>> {
+    BROKER.get_or_init(|| RwLock::new(None))
+}
+
+/// Install the local supervision broker for actor self-registration.
+pub fn install_supervision_broker(inner: Arc<SupervisionBrokerInner>) {
+    *broker_slot().write().unwrap_or_else(|p| p.into_inner()) = Some(inner);
+}
+
+/// Register a local actor that may receive inbound supervision signals or ChildExit delivery.
+pub fn register_supervision_actor(
+    address: ActorAddress,
+    handle: ChildHandle,
+) -> Result<(), TransportError> {
+    let guard = broker_slot().read().unwrap_or_else(|p| p.into_inner());
+    let inner = guard.as_ref().ok_or_else(|| {
+        TransportError::Protocol("supervision broker not installed".into())
+    })?;
+    inner.register(address, handle)
+}
 
 /// Shared broker state (sync inbound hook + actor shell).
 #[derive(Debug)]
@@ -87,6 +111,14 @@ impl SupervisionBrokerInner {
                 spec,
                 link,
             } => self.apply_spawn(envelope.correlation_id, parent, placement, spec, link),
+            SupervisionEvent::ChildExit {
+                child,
+                parent,
+                reason,
+            } => {
+                self.apply_child_exit(child, parent, reason)?;
+                Ok(None)
+            }
             _ => Ok(None),
         }
     }
@@ -149,6 +181,38 @@ impl SupervisionBrokerInner {
         }
     }
 
+    fn apply_child_exit(
+        &self,
+        child: ActorAddress,
+        parent: ActorAddress,
+        reason: WireExitReason,
+    ) -> Result<(), TransportError> {
+        if parent.node != self.local {
+            return Err(TransportError::Protocol(format!(
+                "ChildExit parent {} is not on this node ({})",
+                parent.node, self.local
+            )));
+        }
+        let handle = self
+            .handles
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&parent.actor_id)
+            .cloned()
+            .ok_or_else(|| {
+                TransportError::Protocol(format!(
+                    "ChildExit: unknown local parent actor {}",
+                    parent.actor_id
+                ))
+            })?;
+        let exit = Exit {
+            from: child,
+            reason: wire_to_exit_reason(reason),
+        };
+        (handle.send_exit_fn())(exit).map_err(|e| TransportError::Protocol(e.to_string()))?;
+        Ok(())
+    }
+
     fn apply_signal(
         &self,
         target: &ActorAddress,
@@ -179,6 +243,28 @@ impl SupervisionBrokerInner {
         }
         Ok(())
     }
+
+    /// Propagate a linked remote-spawned child exit to its home supervisor node.
+    pub(crate) fn propagate_child_exit(&self, exit: Exit) {
+        let actor_id = exit.from.actor_id;
+        let child = ActorAddress::on(self.local.clone(), actor_id);
+        let Some(parent) = self
+            .parents
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&actor_id)
+            .cloned()
+        else {
+            return;
+        };
+
+        self.unregister(actor_id);
+        super::supervision_sync::publish_supervision(child_exit_envelope(
+            child,
+            parent,
+            &exit.reason,
+        ));
+    }
 }
 
 /// Tasks-runtime supervision broker actor (keeps broker alive on the node).
@@ -192,7 +278,7 @@ impl SupervisionBroker {
     }
 }
 
-use crate::tasks::{Actor, ActorStart, Context, Handler};
+use crate::tasks::{Actor, ActorStart, Context};
 
 impl Actor for SupervisionBroker {
     async fn started(&mut self, ctx: &Context<Self>) {
@@ -201,8 +287,7 @@ impl Actor for SupervisionBroker {
     }
 
     async fn exit_received(&mut self, exit: Exit, _ctx: &Context<Self>) {
-        let _ = exit;
-        // ChildExit propagation to remote parent — Phase 12.4.
+        self.inner.propagate_child_exit(exit);
     }
 }
 
@@ -214,6 +299,7 @@ pub fn start_supervision_broker(
     Arc<SupervisionBrokerInner>,
 ) {
     let inner = Arc::new(SupervisionBrokerInner::new(local));
+    install_supervision_broker(inner.clone());
     let actor = SupervisionBroker {
         inner: inner.clone(),
     };
@@ -225,7 +311,7 @@ pub fn start_supervision_broker(
 mod tests {
     use super::*;
     use crate::message::Message;
-    use crate::tasks::{Handler};
+    use crate::tasks::Handler;
 
     struct Target;
 

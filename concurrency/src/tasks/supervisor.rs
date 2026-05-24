@@ -149,14 +149,14 @@ impl Supervisor {
 
     async fn handle_exit(&mut self, exit: Exit, ctx: &Context<Self>) {
         if self.logic.suppress_restarts() {
-            self.logic.note_exit_during_batch(exit.from);
+            self.logic.note_exit_during_batch(exit.from.actor_id);
             self.maybe_complete_batch_restart(ctx).await;
             return;
         }
 
         match self
             .logic
-            .on_child_exit(exit.from, &exit.reason, Instant::now())
+            .on_child_exit(exit.from.actor_id, &exit.reason, Instant::now())
         {
             SupervisorAction::Ignore => {}
             SupervisorAction::RestartOne(id) => self.restart_child_with_backoff(ctx, &id).await,
