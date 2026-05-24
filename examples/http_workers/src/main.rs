@@ -8,14 +8,11 @@ use axum::{
 use serde::Serialize;
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::message::Message;
-use spawned_concurrency::tasks::{
-    ChildSpec, pg, Actor, Context, DynamicSupervisor, DynamicSupervisorApi,
-    Handler,
-};
+use spawned_concurrency::pool::PoolError;
+use spawned_concurrency::tasks::{pg, Actor, ActorPool, ChildSpec, Context, Handler};
 use spawned_concurrency::{Application, MailboxConfig, RestartType};
 use spawned_rt::tasks as rt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 const GROUP: &str = "http_workers";
@@ -24,7 +21,7 @@ const WORK_MS: u64 = 200;
 
 #[derive(Clone)]
 struct AppState {
-    next_worker: Arc<AtomicUsize>,
+    pool: Arc<ActorPool>,
 }
 
 #[derive(Serialize)]
@@ -66,24 +63,19 @@ impl Handler<ProcessRequest> for HttpWorker {
 }
 
 async fn post_work(State(state): State<AppState>) -> impl IntoResponse {
-    let workers = pg::members::<HttpWorker>(GROUP);
-    if workers.is_empty() {
-        return (
+    match state.pool.dispatch::<HttpWorker, _>(ProcessRequest) {
+        Ok(()) => (StatusCode::OK, "accepted".to_string()).into_response(),
+        Err(PoolError::NoMembers) => (
             StatusCode::SERVICE_UNAVAILABLE,
             "no workers available".to_string(),
         )
-            .into_response();
-    }
-
-    let idx = state.next_worker.fetch_add(1, Ordering::Relaxed) % workers.len();
-    match workers[idx].send(ProcessRequest) {
-        Ok(()) => (StatusCode::OK, "accepted".to_string()).into_response(),
-        Err(ActorError::MailboxFull) => (
+            .into_response(),
+        Err(PoolError::Actor(ActorError::MailboxFull)) => (
             StatusCode::SERVICE_UNAVAILABLE,
             "worker mailbox full — load shed".to_string(),
         )
             .into_response(),
-        Err(ActorError::ActorStopped) => (
+        Err(PoolError::Actor(ActorError::ActorStopped)) => (
             StatusCode::SERVICE_UNAVAILABLE,
             "worker stopped".to_string(),
         )
@@ -115,29 +107,26 @@ fn main() {
         .init();
 
     rt::run(async {
-        let app = Application::builder()
-            .start(|_ctx| async move {
-                let sup = DynamicSupervisor::builder().max_children(8).start();
-
-                for i in 0..3 {
-                    sup.start_child(
-                        ChildSpec::worker(
-                            "http_worker",
-                            move || HttpWorker {
-                                name: format!("worker-{i}"),
-                            },
-                            RestartType::Permanent,
-                        )
-                        .with_mailbox(MailboxConfig::bounded(WORKER_MAILBOX)),
-                        None,
+        let pool = Arc::new(
+            ActorPool::builder(GROUP)
+                .max_children(8)
+                .start(3, |i| {
+                    ChildSpec::worker(
+                        "http_worker",
+                        move || HttpWorker {
+                            name: format!("worker-{i}"),
+                        },
+                        RestartType::Permanent,
                     )
-                    .await
-                    .unwrap()
-                    .unwrap();
-                }
+                    .with_mailbox(MailboxConfig::bounded(WORKER_MAILBOX))
+                })
+                .await,
+        );
 
+        let app = Application::builder()
+            .start(|_ctx| async {
                 rt::sleep(Duration::from_millis(100)).await;
-                Ok(vec![sup.child_handle()])
+                Ok(vec![pool.child_handle()])
             })
             .await
             .expect("start application");
@@ -145,15 +134,14 @@ fn main() {
         let router = Router::new()
             .route("/work", post(post_work))
             .route("/stats", get(get_stats))
-            .with_state(AppState {
-                next_worker: Arc::new(AtomicUsize::new(0)),
-            });
+            .with_state(AppState { pool: pool.clone() });
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
             .await
             .expect("bind port 3000");
         println!("=== HTTP Workers Demo ===");
         println!("Workers: 3 x bounded mailbox (cap {WORKER_MAILBOX}), ~{WORK_MS}ms handler");
+        println!("Dispatch: ActorPool round-robin via pg");
         println!();
         println!("  curl -X POST http://127.0.0.1:3000/work");
         println!("  curl http://127.0.0.1:3000/stats");

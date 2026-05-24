@@ -504,6 +504,37 @@ Actors are **automatically removed** from all groups when they exit. `DynamicSup
 
 See [`pg_workers`](../examples/pg_workers) (tasks mode demo).
 
+### Actor pools (`tasks::ActorPool` / `PoolDispatcher`)
+
+OTP-style worker pools compose `DynamicSupervisor` + pg membership + routed dispatch — no separate pool actor.
+
+| Type / function | Description |
+|-----------------|-------------|
+| `PoolStrategy::RoundRobin` | Cycle through pg members (default) |
+| `PoolStrategy::LeastLoaded` | Pick member with lowest mailbox depth |
+| `PoolDispatcher::new(group, strategy)` | Stateless routing handle for one pg group |
+| `tasks::pool::dispatch::<A, M>(&dispatcher, msg)` | Fire-and-forget to one member |
+| `tasks::pool::call_one::<A, M>(&dispatcher, msg).await` | Request/reply to one member |
+| `ActorPool::builder(group).start(count, spec_for).await` | Supervised pool of `count` workers |
+
+Workers must `pg::join(group, ...)` in `started()` using the same group name as the pool builder.
+
+```rust
+use spawned_concurrency::tasks::{pg, ActorPool, ChildSpec, Actor, Context, Handler};
+use spawned_concurrency::{PoolStrategy, RestartType};
+
+let pool = ActorPool::builder("http_workers")
+    .strategy(PoolStrategy::LeastLoaded)
+    .max_children(8)
+    .start(3, |i| ChildSpec::worker("worker", move || MyWorker { id: i }, RestartType::Permanent))
+    .await;
+
+pool.dispatch::<MyWorker, _>(ProcessRequest)?;
+let reply = pool.call_one::<MyWorker, _>(GetStats).await?;
+```
+
+See [`http_workers`](../examples/http_workers) for load-shedding with bounded mailboxes.
+
 ### Testing
 
 Integration tests in [`concurrency/tests/pg_integration.rs`](../concurrency/tests/pg_integration.rs) cover both runtimes (`mod tasks` and `mod threads`): join, broadcast, refcounted leave, auto-leave on exit, and `ChildHandle` membership.

@@ -41,6 +41,7 @@ pub(crate) mod mailbox;
 pub mod message;
 pub mod monitor;
 pub mod pg;
+pub mod pool;
 pub mod registry;
 pub mod response;
 pub mod shutdown_signal;
@@ -65,6 +66,7 @@ pub use link::Exit;
 pub use mailbox::{BackpressureMode, MailboxConfig};
 pub use monitor::{Down, MonitorRef};
 pub use pg::{PgCallReport, PgError, PgSendReport, DEFAULT_SCOPE};
+pub use pool::{PoolDispatcher, PoolError, PoolStrategy};
 pub use response::Response;
 pub use shutdown_signal::{
     register_shutdown_on_signal, spawn_shutdown_signal_dispatcher_tasks,

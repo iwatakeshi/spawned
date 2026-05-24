@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after Phase 9.5 (unified ChildSpec).
+**Last updated:** after Phase 9.6 (actor pool pattern).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -234,9 +234,16 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 - Handle-based child linking via `ChildHandle::link` and `ActorStart::start_linked_to_handle`
 - `dynamic_supervisor::ChildSpec` re-exports the runtime `ChildSpec` (backward compatible)
 
+### 9.6. Actor pool pattern — shipped
+
+- `PoolStrategy` (`RoundRobin`, `LeastLoaded`) and `PoolDispatcher` for pg-based routed dispatch
+- `tasks::pool::dispatch` / `call_one` (+ threads sync variants)
+- `ActorPool::builder(group).start(count, spec_for)` wraps `DynamicSupervisor` + pg group
+- `examples/http_workers` migrated from manual round-robin to `ActorPool`
+
 | Phase | Focus |
 |-------|--------|
-| **9** | Remaining Kameo parity: pools, supervisor ↔ pg auto-join |
+| **9** | Remaining Kameo parity: supervisor ↔ pg auto-join |
 | **10** | Federated registry, distributed pg, libp2p transport |
 
 ## Future Considerations
