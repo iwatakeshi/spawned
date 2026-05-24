@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after Phase 9.6 (actor pool pattern).
+**Last updated:** after Phase 9.7 (supervisor ↔ pg auto-join).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -76,7 +76,7 @@ Closes [#132](https://github.com/lambdaclass/spawned/issues/132) and [#133](http
 | **Interruptible shutdown** | `kill()` does not preempt an in-flight handler or `stopped()`; escalation waits for the actor to return to its loop |
 | **Dynamic supervisor strategies** | `DynamicSupervisor` is **OneForOne only** (Erlang `simple_one_for_one`); no OneForAll / RestForOne at runtime |
 | **Unified `ChildSpec` type** | ✅ Shipped in Phase 9.5 — shared inner spec for static + dynamic supervisors |
-| **Supervised process groups** | No automatic pg membership when starting children; join groups explicitly in `started()` |
+| **Supervised process groups** | ✅ Shipped in Phase 9.7 — `ChildSpec::with_pg_group` / `with_pg_group_scoped` |
 
 ### Other Phase 3 work
 
@@ -101,7 +101,7 @@ Erlang/Ractor-style named actor sets for broadcast and dispatch on a **single no
 |------|-------|
 | **Group monitors** | No `monitor` / `demonitor` for membership change notifications (Ractor-style) |
 | **Distributed pg** | No cross-node membership; `get_local_members` is identical to `get_members` on one node |
-| **Supervisor integration** | Dynamic/static supervisors do not auto-join children to groups |
+| **Supervisor integration** | ✅ Auto-join via `ChildSpec::with_pg_group` (Phase 9.7); `ActorPool` applies pool group by default |
 
 ## Phase 5: Documentation & Polish — ongoing
 
@@ -241,9 +241,15 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 - `ActorPool::builder(group).start(count, spec_for)` wraps `DynamicSupervisor` + pg group
 - `examples/http_workers` migrated from manual round-robin to `ActorPool`
 
+### 9.7. Supervisor ↔ pg auto-join — shipped
+
+- `ChildSpec::with_pg_group(group)` / `with_pg_group_scoped(scope, group)` — typed pg join at child start
+- Works for static and dynamic supervisors (tasks + threads)
+- `ActorPool::start` auto-applies the pool group when the spec has no pg membership
+- Restarts re-join via the same start path
+
 | Phase | Focus |
 |-------|--------|
-| **9** | Remaining Kameo parity: supervisor ↔ pg auto-join |
 | **10** | Federated registry, distributed pg, libp2p transport |
 
 ## Future Considerations

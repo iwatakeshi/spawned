@@ -175,19 +175,23 @@ let handle = sup
 |------|------------|
 | **OneForAll / RestForOne** | Use static `Supervisor` for batch restart trees; dynamic supervisor is OneForOne only |
 | **Separate `ChildSpec` type** | ✅ Unified in Phase 9.5 — use `tasks::ChildSpec` for static and dynamic supervisors |
-| **Auto pg membership** | Call `tasks::pg::join` or `threads::pg::join` in the child's `started()` if the pool should be discoverable |
-| **Backoff between restarts** | Sleep in `started()` or wrap restarts in application logic |
+| **Auto pg membership** | ✅ `ChildSpec::with_pg_group` / `with_pg_group_scoped`; or call `pg::join` in `started()` |
+| **Backoff between restarts** | ✅ `ChildSpec::with_backoff` (Phase 9.1) |
 
 ## Process groups
 
 Named sets of actors for broadcast and dispatch — complementary to supervision, not a replacement.
 
 ```rust
-use spawned_concurrency::tasks::{pg, ActorStart as _};
+use spawned_concurrency::tasks::{pg, ChildSpec, ActorStart as _};
 // or: use spawned_concurrency::threads::{pg, ActorStart as _};
 
-// In Worker::started()
-pg::join("handlers", &ctx.actor_ref());
+// Option A: auto-join at supervisor start
+let spec = ChildSpec::worker("handler", || Worker::new(), RestartType::Permanent)
+    .with_pg_group("handlers");
+
+// Option B: join in started()
+// pg::join("handlers", &ctx.actor_ref());
 
 // Broadcast to all live members
 for worker in pg::members::<Worker>("handlers") {

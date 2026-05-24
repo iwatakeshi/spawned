@@ -517,7 +517,7 @@ OTP-style worker pools compose `DynamicSupervisor` + pg membership + routed disp
 | `tasks::pool::call_one::<A, M>(&dispatcher, msg).await` | Request/reply to one member |
 | `ActorPool::builder(group).start(count, spec_for).await` | Supervised pool of `count` workers |
 
-Workers must `pg::join(group, ...)` in `started()` using the same group name as the pool builder.
+Workers join the pool's pg group automatically when started via [`ActorPool`](API-GUIDE.md#actor-pools-tasksactorpool--pooldispatcher) (or set `.with_pg_group(group)` on the spec explicitly).
 
 ```rust
 use spawned_concurrency::tasks::{pg, ActorPool, ChildSpec, Actor, Context, Handler};
@@ -537,7 +537,7 @@ See [`http_workers`](../examples/http_workers) for load-shedding with bounded ma
 
 ### Testing
 
-Integration tests in [`concurrency/tests/pg_integration.rs`](../concurrency/tests/pg_integration.rs) cover both runtimes (`mod tasks` and `mod threads`): join, broadcast, refcounted leave, auto-leave on exit, and `ChildHandle` membership.
+Integration tests in [`concurrency/tests/pg_integration.rs`](../concurrency/tests/pg_integration.rs) cover both runtimes (`mod tasks` and `mod threads`): join, broadcast, refcounted leave, auto-leave on exit, `ChildHandle` membership, and `ChildSpec::with_pg_group` auto-join.
 
 Run: `cargo test -p spawned-concurrency --test pg_integration`
 
@@ -547,7 +547,6 @@ Run: `cargo test -p spawned-concurrency --test pg_integration`
 |------|-------|
 | **Group monitors** | No notifications when membership changes |
 | **Distributed pg** | Cross-node membership requires clustering (not started) |
-| **Supervisor auto-join** | Starting a child does not add it to a process group |
 
 ---
 
@@ -688,6 +687,10 @@ let spec = ChildSpec::worker("worker1", || Worker::new(), RestartType::Permanent
 let spec = spec.with_shutdown(ShutdownType::Infinity);
 // Bounded mailbox for load-sensitive workers:
 let spec = spec.with_mailbox(MailboxConfig::bounded(100));
+// Auto-join a process group for broadcast/dispatch (typed join at start):
+let spec = spec.with_pg_group("handlers");
+// Scoped group (overlay network):
+let spec = spec.with_pg_group_scoped("tenant-a", "handlers");
 
 // Nested supervisor:
 let nested = ChildSpec::supervisor("sup", || inner_supervisor(), RestartType::Permanent);
@@ -770,7 +773,7 @@ See [`dynamic_workers`](../examples/dynamic_workers).
 |------|-------|
 | **Restart strategies** | OneForOne only; no OneForAll / RestForOne for runtime pools |
 | **Backoff** | Immediate restart on crash; no exponential delay |
-| **Process group integration** | Children are not auto-joined to pg; call `pg::join` in `started()` |
+| **Process group integration** | ✅ Use `ChildSpec::with_pg_group` or join manually in `started()` |
 
 ## Response\<T\>
 

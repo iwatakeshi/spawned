@@ -24,15 +24,10 @@ mod tasks {
     use spawned_rt::tasks as rt;
 
     struct Worker {
-        group: String,
         value: u32,
     }
 
-    impl Actor for Worker {
-        async fn started(&mut self, ctx: &Context<Self>) {
-            pg::join(&self.group, &ctx.actor_ref());
-        }
-    }
+    impl Actor for Worker {}
 
     impl Handler<Work> for Worker {
         async fn handle(&mut self, _msg: Work, _ctx: &Context<Self>) -> u32 {
@@ -51,11 +46,9 @@ mod tasks {
             let group = unique_group("tasks_pool_rr");
             let pool = ActorPool::builder(&group)
                 .start(3, |i| {
-                    let g = group.clone();
                     ChildSpec::worker(
                         "worker",
                         move || Worker {
-                            group: g.clone(),
                             value: i as u32 * 10,
                         },
                         RestartType::Permanent,
@@ -105,15 +98,10 @@ mod threads {
     use std::time::Duration;
 
     struct Worker {
-        group: String,
         value: u32,
     }
 
-    impl Actor for Worker {
-        fn started(&mut self, ctx: &Context<Self>) {
-            pg::join(&self.group, &ctx.actor_ref());
-        }
-    }
+    impl Actor for Worker {}
 
     impl Handler<Work> for Worker {
         fn handle(&mut self, _msg: Work, _ctx: &Context<Self>) -> u32 {
@@ -126,13 +114,9 @@ mod threads {
     fn actor_pool_call_one() {
         let group = unique_group("threads_pool");
         let pool = ActorPool::builder(&group).start(2, |i| {
-            let g = group.clone();
             ChildSpec::worker(
                 "worker",
-                move || Worker {
-                    group: g.clone(),
-                    value: i as u32,
-                },
+                move || Worker { value: i as u32 },
                 RestartType::Permanent,
             )
             .with_mailbox(MailboxConfig::bounded(4))

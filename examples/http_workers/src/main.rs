@@ -46,13 +46,8 @@ struct HttpWorker {
 }
 
 impl Actor for HttpWorker {
-    async fn started(&mut self, ctx: &Context<Self>) {
-        pg::join(GROUP, &ctx.actor_ref());
+    async fn started(&mut self, _ctx: &Context<Self>) {
         tracing::info!("[{}] ready (mailbox cap {})", self.name, WORKER_MAILBOX);
-    }
-
-    async fn stopped(&mut self, ctx: &Context<Self>) {
-        let _ = pg::leave(GROUP, ctx.id());
     }
 }
 

@@ -4,11 +4,12 @@ use std::sync::Arc;
 
 use crate::child_handle::ChildHandle;
 use crate::child_spec::{
-    ChildSpec as InnerChildSpec, ChildType, RestartBackoff, RestartType, ShutdownType,
-    DEFAULT_WORKER_SHUTDOWN,
+    ChildSpec as InnerChildSpec, ChildType, PgMembership, RestartBackoff, RestartType,
+    ShutdownType, DEFAULT_WORKER_SHUTDOWN,
 };
 use crate::mailbox::MailboxConfig;
 
+use super::pg;
 use super::ActorStart;
 
 /// Child specification for threads-mode supervisors (static and dynamic).
@@ -23,16 +24,21 @@ impl ChildSpec {
     {
         Self(InnerChildSpec {
             id: id.into(),
-            start: Arc::new(move |parent: &ChildHandle, mailbox: MailboxConfig| {
-                start()
-                    .start_linked_to_handle(parent, mailbox)
-                    .child_handle()
-            }),
+            start: Arc::new(
+                move |parent: &ChildHandle, mailbox: MailboxConfig, pg_membership: Option<&PgMembership>| {
+                    let actor_ref = start().start_linked_to_handle(parent, mailbox);
+                    if let Some(pg) = pg_membership {
+                        pg::join_scoped(&pg.scope, &pg.group, &actor_ref);
+                    }
+                    actor_ref.child_handle()
+                },
+            ),
             restart,
             shutdown: DEFAULT_WORKER_SHUTDOWN,
             child_type: ChildType::Worker,
             mailbox: MailboxConfig::default_worker(),
             backoff: RestartBackoff::default(),
+            pg_membership: None,
         })
     }
 
@@ -43,16 +49,21 @@ impl ChildSpec {
     {
         Self(InnerChildSpec {
             id: id.into(),
-            start: Arc::new(move |parent: &ChildHandle, mailbox: MailboxConfig| {
-                start()
-                    .start_linked_to_handle(parent, mailbox)
-                    .child_handle()
-            }),
+            start: Arc::new(
+                move |parent: &ChildHandle, mailbox: MailboxConfig, pg_membership: Option<&PgMembership>| {
+                    let actor_ref = start().start_linked_to_handle(parent, mailbox);
+                    if let Some(pg) = pg_membership {
+                        pg::join_scoped(&pg.scope, &pg.group, &actor_ref);
+                    }
+                    actor_ref.child_handle()
+                },
+            ),
             restart,
             shutdown: ShutdownType::Infinity,
             child_type: ChildType::Supervisor,
             mailbox: MailboxConfig::unbounded(),
             backoff: RestartBackoff::default(),
+            pg_membership: None,
         })
     }
 
@@ -66,6 +77,14 @@ impl ChildSpec {
 
     pub fn with_backoff(self, backoff: RestartBackoff) -> Self {
         Self(self.0.with_backoff(backoff))
+    }
+
+    pub fn with_pg_group(self, group: impl Into<String>) -> Self {
+        Self(self.0.with_pg_group(group))
+    }
+
+    pub fn with_pg_group_scoped(self, scope: impl Into<String>, group: impl Into<String>) -> Self {
+        Self(self.0.with_pg_group_scoped(scope, group))
     }
 }
 

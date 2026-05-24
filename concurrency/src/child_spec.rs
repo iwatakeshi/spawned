@@ -164,8 +164,16 @@ pub fn should_restart(restart: RestartType, reason: &ExitReason) -> bool {
     }
 }
 
-/// Type-erased child start function (parent handle + mailbox → child handle).
-pub type ChildStartFn = Arc<dyn Fn(&ChildHandle, MailboxConfig) -> ChildHandle + Send + Sync>;
+/// Type-erased child start function (parent handle + mailbox + optional pg → child handle).
+pub type ChildStartFn =
+    Arc<dyn Fn(&ChildHandle, MailboxConfig, Option<&PgMembership>) -> ChildHandle + Send + Sync>;
+
+/// Process group to join when a supervised child starts (see [`ChildSpec::with_pg_group`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PgMembership {
+    pub scope: String,
+    pub group: String,
+}
 
 /// Specification for a supervised child — shared by static and dynamic supervisors.
 pub struct ChildSpec {
@@ -175,6 +183,7 @@ pub struct ChildSpec {
     pub child_type: ChildType,
     pub mailbox: MailboxConfig,
     pub backoff: RestartBackoff,
+    pub pg_membership: Option<PgMembership>,
     pub(crate) start: ChildStartFn,
 }
 
@@ -188,6 +197,7 @@ impl Clone for ChildSpec {
             child_type: self.child_type,
             mailbox: self.mailbox,
             backoff: self.backoff,
+            pg_membership: self.pg_membership.clone(),
         }
     }
 }
@@ -195,7 +205,29 @@ impl Clone for ChildSpec {
 impl ChildSpec {
     /// Start a linked child under `parent` using this spec's mailbox policy.
     pub(crate) fn start_child(&self, parent: &ChildHandle) -> ChildHandle {
-        (self.start)(parent, self.mailbox)
+        (self.start)(parent, self.mailbox, self.pg_membership.as_ref())
+    }
+
+    /// Join the child to this process group (default scope) when it starts.
+    ///
+    /// Typed dispatch via [`crate::tasks::pg`] / [`crate::threads::pg`] works when the
+    /// spec is built with [`crate::tasks::ChildSpec::worker`] or
+    /// [`crate::tasks::ChildSpec::supervisor`].
+    pub fn with_pg_group(mut self, group: impl Into<String>) -> Self {
+        self.with_pg_group_scoped(crate::pg::DEFAULT_SCOPE, group)
+    }
+
+    /// Join the child to a scoped process group when it starts.
+    pub fn with_pg_group_scoped(mut self, scope: impl Into<String>, group: impl Into<String>) -> Self {
+        self.pg_membership = Some(PgMembership {
+            scope: scope.into(),
+            group: group.into(),
+        });
+        self
+    }
+
+    pub(crate) fn has_pg_membership(&self) -> bool {
+        self.pg_membership.is_some()
     }
 
     pub fn with_shutdown(mut self, shutdown: ShutdownType) -> Self {

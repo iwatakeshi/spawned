@@ -222,6 +222,41 @@ mod tasks {
             assert_eq!(sum, 14); // cast then call: (1+11) + (1+1) wait - after cast: 1,11. after call: 2,12. sum=14
         });
     }
+
+    #[test]
+    fn child_spec_with_pg_group_auto_joins() {
+        block_on(async {
+            use spawned_concurrency::tasks::{
+                dynamic_supervisor::ChildSpec, DynamicSupervisor, DynamicSupervisorApi,
+            };
+
+            struct PgWorker;
+            impl Actor for PgWorker {}
+            impl Handler<Tick> for PgWorker {
+                async fn handle(&mut self, _msg: Tick, _ctx: &Context<Self>) -> u32 {
+                    1
+                }
+            }
+
+            let group = unique_group("tasks_pg_auto_join");
+            let sup = DynamicSupervisor::builder().start();
+
+            sup.start_child(
+                ChildSpec::worker("worker", || PgWorker, spawned_concurrency::RestartType::Permanent)
+                    .with_pg_group(&group),
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            rt::sleep(std::time::Duration::from_millis(20)).await;
+            assert_eq!(tasks_pg::members::<PgWorker>(&group).len(), 1);
+
+            sup.child_handle().stop();
+            sup.join().await;
+        });
+    }
 }
 
 mod threads {
@@ -388,5 +423,37 @@ mod threads {
         assert!(call.failed.is_empty());
         let sum: u32 = call.ok.iter().map(|(_, v)| *v).sum();
         assert_eq!(sum, 14);
+    }
+
+    #[test]
+    fn child_spec_with_pg_group_auto_joins() {
+        use spawned_concurrency::threads::{
+            dynamic_supervisor::ChildSpec, DynamicSupervisor, DynamicSupervisorApi,
+        };
+
+        struct PgWorker;
+        impl Actor for PgWorker {}
+        impl Handler<Tick> for PgWorker {
+            fn handle(&mut self, _msg: Tick, _ctx: &Context<Self>) -> u32 {
+                1
+            }
+        }
+
+        let group = unique_group("threads_pg_auto_join");
+        let sup = DynamicSupervisor::builder().start();
+
+        sup.start_child(
+            ChildSpec::worker("worker", || PgWorker, spawned_concurrency::RestartType::Permanent)
+                .with_pg_group(&group),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(threads_pg::members::<PgWorker>(&group).len(), 1);
+
+        sup.child_handle().stop();
+        sup.join();
     }
 }

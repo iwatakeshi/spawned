@@ -117,6 +117,8 @@ impl ActorPoolBuilder {
         self
     }
 
+    /// Workers are auto-joined to the pool's pg group unless the spec already calls
+    /// [`with_pg_group`](crate::threads::ChildSpec::with_pg_group).
     pub fn start<F>(self, count: usize, spec_for: F) -> ActorPool
     where
         F: Fn(usize) -> ChildSpec,
@@ -128,8 +130,16 @@ impl ActorPoolBuilder {
         let supervisor = builder.start();
 
         for i in 0..count {
+            let spec = {
+                let s = spec_for(i);
+                if s.has_pg_membership() {
+                    s
+                } else {
+                    s.with_pg_group(&self.group)
+                }
+            };
             supervisor
-                .start_child(spec_for(i), None)
+                .start_child(spec, None)
                 .expect("start pool worker")
                 .expect("start pool worker");
         }
