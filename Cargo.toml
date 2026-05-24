@@ -5,6 +5,7 @@ members = [
     "rt",
     "address",
     "wire",
+    "cluster",
     "concurrency",
     "macros",
     "examples/bank",
@@ -32,6 +33,7 @@ members = [
 [workspace.dependencies]
 spawned-address = { path = "address", version = "0.5.0" }
 spawned-wire = { path = "wire", version = "0.5.0" }
+spawned-cluster = { path = "cluster", version = "0.5.0" }
 spawned-rt = { path = "rt", version = "0.5.0" }
 spawned-concurrency = { path = "concurrency", version = "0.5.0" }
 spawned-macros = { path = "macros", version = "0.5.0" }

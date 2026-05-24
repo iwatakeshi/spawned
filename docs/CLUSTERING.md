@@ -11,12 +11,42 @@ Spawned is evolving toward OTP-style distribution with Kameo-inspired ergonomics
 | `request` / `send` + `Handler<M>` | Type-erased global PID dispatch |
 | `simple_one_for_one` + pg routing | Dedicated ActorPool actor model |
 
-## Phase 8a (current): addressing and wire format
+## Phase 8a: addressing and wire format
 
-No network yet. Foundation crates:
+Foundation crates (no network):
 
 - **`spawned-address`** — `NodeId`, `ActorAddress`, `ActorId`, `local_node()`
 - **`spawned-wire`** — `WireEnvelope`, `RemoteActor`, `RemoteMessage`, postcard codec
+
+## Phase 8b (current): router + named registry
+
+Enable with `spawned-concurrency` feature `cluster`:
+
+```toml
+spawned-concurrency = { version = "...", features = ["cluster"] }
+```
+
+- **`spawned-cluster`** — [`ClusterRouter`], [`Transport`] trait, [`UnavailableTransport`] stub
+- **`RemoteActorRef<M>`** — routes by [`ActorAddress::is_local()`]: local `Recipient` or remote transport
+- **Named registry** — `register_named`, `lookup_address`, `unregister_named` (cluster-wide names, local handles)
+
+Remote send/request returns [`ActorError::RemoteUnreachable`] until Phase 8c wires TCP.
+
+```rust
+use spawned_concurrency::{
+    register_named, lookup_address, RemoteActorRef, ClusterRouter,
+};
+
+register_named("worker", child_handle)?;
+let addr = lookup_address("worker").unwrap();
+let remote = RemoteActorRef::<Ping>::local_tasks(addr, recipient);
+remote.send(Ping { n: 1 })?; // local path
+
+let remote_only = RemoteActorRef::<Ping>::remote_global(
+    ActorAddress::on("peer@host".into(), actor_id),
+);
+assert!(remote_only.send(Ping { n: 1 }).is_err()); // stub transport
+```
 
 ### Node identity
 
@@ -67,8 +97,8 @@ Stable ids are generated as `spawned.{TypeName}/v1`.
 
 | Phase | Focus |
 |-------|--------|
-| **8a** | Address + wire + pg refactor (this document) |
-| **8b** | `ClusterRouter`, `RemoteActorRef`, registry hooks |
+| **8a** | Address + wire + pg refactor |
+| **8b** | `ClusterRouter`, `RemoteActorRef`, registry hooks (this document) |
 | **8c** | Pluggable transport, TCP MVP, two-node test |
 | **8d** | `Node` / `Application` bootstrap |
 | **9** | Cluster-safe parity: backoff, pg scopes, pools, unified ChildSpec |

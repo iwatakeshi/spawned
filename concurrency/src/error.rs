@@ -67,6 +67,12 @@ pub enum ActorError {
     /// [`BackpressureMode::FailFast`](crate::BackpressureMode::FailFast) and is full.
     #[error("Actor mailbox is full")]
     MailboxFull,
+    /// The target actor is on a remote node and no transport is available.
+    ///
+    /// Returned when the cluster router has no transport or the remote peer
+    /// cannot be reached (requires the `cluster` feature).
+    #[error("Remote actor is unreachable")]
+    RemoteUnreachable,
 }
 
 impl<T> From<spawned_rt::threads::mpsc::SendError<T>> for ActorError {
@@ -78,6 +84,13 @@ impl<T> From<spawned_rt::threads::mpsc::SendError<T>> for ActorError {
 impl<T> From<spawned_rt::tasks::mpsc::SendError<T>> for ActorError {
     fn from(_value: spawned_rt::tasks::mpsc::SendError<T>) -> Self {
         Self::ActorStopped
+    }
+}
+
+impl From<spawned_wire::WireError> for ActorError {
+    fn from(err: spawned_wire::WireError) -> Self {
+        tracing::error!("wire serialization error: {err}");
+        Self::RemoteUnreachable
     }
 }
 

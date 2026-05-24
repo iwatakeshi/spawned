@@ -278,6 +278,8 @@ pub(crate) fn remove_actor(id: ActorId) {
         .write()
         .unwrap_or_else(|p| p.into_inner())
         .remove_actor(local_address(id));
+    #[cfg(feature = "cluster")]
+    crate::cluster::remove_named_by_actor_id(id);
 }
 
 #[cfg(test)]

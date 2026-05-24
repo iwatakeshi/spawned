@@ -1455,6 +1455,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "spawned-cluster"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "spawned-address",
+ "spawned-wire",
+ "thiserror",
+]
+
+[[package]]
 name = "spawned-concurrency"
 version = "0.5.0"
 dependencies = [
@@ -1462,6 +1472,7 @@ dependencies = [
  "pin-project-lite",
  "serde",
  "spawned-address",
+ "spawned-cluster",
  "spawned-macros",
  "spawned-rt",
  "spawned-wire",

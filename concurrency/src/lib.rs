@@ -47,6 +47,9 @@ pub mod supervisor;
 pub mod tasks;
 pub mod threads;
 
+#[cfg(feature = "cluster")]
+pub mod cluster;
+
 pub use child_handle::{ActorId, ChildHandle};
 pub use spawned_address::{ActorAddress, Locality, NodeId, NodeName, local_node};
 pub use spawned_wire::{RemoteActor, RemoteMessage, WireEnvelope, WireError};
@@ -68,6 +71,12 @@ pub use shutdown_signal::{
 pub use spawned_macros::{actor, protocol, remote_actor, remote_message};
 pub use spawned_rt::OsSignal;
 pub use supervisor::SupervisorStrategy;
+
+#[cfg(feature = "cluster")]
+pub use cluster::{
+    lookup_address, register_named, unregister_named, ClusterRouter, NamedRegistryError,
+    RemoteActorRef, Transport, TransportError, UnavailableTransport,
+};
 
 #[cfg(test)]
 mod remote_macro_tests {

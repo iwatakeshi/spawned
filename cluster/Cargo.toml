@@ -1,0 +1,15 @@
+[package]
+name = "spawned-cluster"
+description = "Cluster routing and transport abstractions for Spawned"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+spawned-address = { workspace = true }
+spawned-wire = { workspace = true }
+thiserror = "2.0.12"
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }

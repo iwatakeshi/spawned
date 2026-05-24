@@ -60,7 +60,7 @@ impl WireEnvelope {
 }
 
 /// Errors encoding or decoding wire data.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WireError {
     #[error("encode failed: {0}")]
     Encode(String),

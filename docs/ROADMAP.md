@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after clustering foundations (Phase 8a).
+**Last updated:** after Phase 8b (cluster router + named registry).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -177,22 +177,24 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 
 **North star:** OTP over Kameo — see [CLUSTERING.md](CLUSTERING.md).
 
-### 8a. Address + wire format — in progress
-
-**Shipped / in flight:**
+### 8a. Address + wire format — shipped
 
 - **`spawned-address`** — `NodeId`, `ActorAddress`, `ActorId`, `local_node()` (`SPAWNED_NODE_NAME`)
 - **`spawned-wire`** — `WireEnvelope`, `RemoteActor`, `RemoteMessage`, postcard codec
 - **`#[remote_actor]` / `#[remote_message]`** macros with stable `spawned.{Type}/v1` ids
 - **pg internal keys** — `ActorAddress` (local node + actor id); public API unchanged
 
-**Non-goals (8a):** network transport, remote send, distributed registry
+### 8b. Router + named registry — shipped
 
-### 8b–10 (planned)
+- **`spawned-cluster`** — `ClusterRouter`, `Transport`, `UnavailableTransport` stub
+- **`RemoteActorRef<M>`** — locality-aware send/request (`cluster` feature on `spawned-concurrency`)
+- **Named registry** — `register_named` / `lookup_address` / `unregister_named`
+- Remote path returns `ActorError::RemoteUnreachable` until 8c
+
+### 8c–10 (planned)
 
 | Phase | Focus |
 |-------|--------|
-| **8b** | `ClusterRouter`, `RemoteActorRef`, registry address integration |
 | **8c** | Pluggable transport, TCP MVP, two-node integration test |
 | **8d** | `Node` / `Application` bootstrap (Kameo `bootstrap` parity, OTP-shaped) |
 | **9** | Cluster-safe Kameo parity: backoff, pg scopes, pools, unified ChildSpec |
