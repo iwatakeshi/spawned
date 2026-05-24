@@ -364,11 +364,22 @@ Deferred to **12.6+**: cross-node link, static supervisor `ChildSpec::placement`
 - Wire `Demonitor` includes `target` address (routes to placement node)
 - Integration test: `concurrency/tests/supervision_monitor_two_node.rs`
 
-Deferred to **12.6**: cross-node link/unlink propagation.
+Deferred to **12.7**: static supervisor `ChildSpec::placement`.
 
 | Phase | Focus |
 |-------|--------|
 | **12.5** | Cross-node monitor propagation — shipped |
+
+### 12.6. Cross-node link propagation — shipped
+
+- `Context::link_address` / `unlink_address` — local targets use existing `link`; remote targets publish `Link`/`Unlink` to the placement node
+- Broker `link_peers` + exit wait tasks emit `ChildExit` to remote peers; initiator publishes `ChildExit` on local death via `propagate_remote_link_exits`
+- Inbound `ChildExit` delivers trapped `Exit` via `register_supervision_actor`
+- Integration test: `concurrency/tests/supervision_link_two_node.rs`
+
+| Phase | Focus |
+|-------|--------|
+| **12.6** | Cross-node link propagation — shipped |
 
 ## Future Considerations
 

@@ -268,7 +268,7 @@ register_remote_spec("api_worker", || ChildSpec::worker("api", || ApiServer::new
 - `install_supervision_request` + `request_spawn` for correlated spawn RPC
 - `install_tasks_runtime(Handle::current())` when using a manual TCP listener (worker node without `Node::builder`)
 
-Interim linking: `link = true` links the child to the **placement node's broker**; true cross-node link arrives in Phase 12.6.
+Interim linking: `link = true` links the child to the **placement node's broker**; explicit cross-node `link_address` arrives in Phase 12.6.
 
 Integration test: `concurrency/tests/supervision_spawn_two_node.rs`.
 
@@ -300,6 +300,19 @@ When an actor on node A monitors a remote actor on node B:
 
 Integration test: `concurrency/tests/supervision_monitor_two_node.rs`.
 
+### Phase 12.6: Cross-node link propagation (shipped)
+
+When an actor on node A links to a remote actor on node B:
+
+1. Initiator publishes `Link { a, b }` to **B** (`b`'s node)
+2. Placement-node broker records remote peer `a` for local actor `b` and waits for exit
+3. On `b`'s exit, broker publishes `ChildExit { child: b, parent: a, reason }` to **A**
+4. Home-node broker delivers `Exit { from: b, reason }` to the registered actor (`register_supervision_actor` + `trap_exit`)
+5. When **A** dies, `propagate_remote_link_exits` publishes `ChildExit` to each remote link peer
+6. `unlink_address` publishes `Unlink { a, b }` to cancel the placement-side wait peer list
+
+Integration test: `concurrency/tests/supervision_link_two_node.rs`.
+
 ### Clustering checklist (every feature PR)
 
 1. **Address, not local id** — Public handles that may be grouped or looked up use `ActorAddress`.
@@ -328,5 +341,6 @@ Integration test: `concurrency/tests/supervision_monitor_two_node.rs`.
 | **12.3** | Remote spawn registry + DynamicSupervisor API (this document) |
 | **12.4** | ChildExit propagation + remote restart (this document) |
 | **12.5** | Cross-node monitor propagation (this document) |
+| **12.6** | Cross-node link propagation (this document) |
 
 See [ROADMAP.md](ROADMAP.md) for full detail.

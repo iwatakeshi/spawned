@@ -41,6 +41,9 @@ type MonitorTable = Arc<Mutex<HashMap<MonitorRef, Arc<AtomicBool>>>>;
 #[cfg(feature = "cluster")]
 type RemoteMonitorTable = Arc<Mutex<HashMap<MonitorRef, spawned_address::ActorAddress>>>;
 
+#[cfg(feature = "cluster")]
+type RemoteLinkTable = Arc<Mutex<std::collections::HashSet<spawned_address::ActorAddress>>>;
+
 pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
 
 // ---------------------------------------------------------------------------
@@ -156,6 +159,8 @@ pub struct Context<A: Actor> {
     monitors: MonitorTable,
     #[cfg(feature = "cluster")]
     remote_monitors: RemoteMonitorTable,
+    #[cfg(feature = "cluster")]
+    remote_links: RemoteLinkTable,
     trap_exit: TrapExitFlag,
     links: LinkTable,
     linked_reason: LinkedExitReason,
@@ -174,6 +179,8 @@ impl<A: Actor> Clone for Context<A> {
             monitors: self.monitors.clone(),
             #[cfg(feature = "cluster")]
             remote_monitors: self.remote_monitors.clone(),
+            #[cfg(feature = "cluster")]
+            remote_links: self.remote_links.clone(),
             trap_exit: self.trap_exit.clone(),
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
@@ -202,6 +209,8 @@ impl<A: Actor> Context<A> {
             monitors: actor_ref.monitors.clone(),
             #[cfg(feature = "cluster")]
             remote_monitors: actor_ref.remote_monitors.clone(),
+            #[cfg(feature = "cluster")]
+            remote_links: actor_ref.remote_links.clone(),
             trap_exit: actor_ref.trap_exit.clone(),
             links: actor_ref.links.clone(),
             linked_reason: actor_ref.linked_reason.clone(),
@@ -299,6 +308,8 @@ impl<A: Actor> Context<A> {
             monitors: self.monitors.clone(),
             #[cfg(feature = "cluster")]
             remote_monitors: self.remote_monitors.clone(),
+            #[cfg(feature = "cluster")]
+            remote_links: self.remote_links.clone(),
             trap_exit: self.trap_exit.clone(),
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
@@ -441,6 +452,55 @@ impl<A: Actor> Context<A> {
         link::unregister_link(self.id, &self.links, target.id(), target.links());
     }
 
+    /// Link to an actor by cluster address (local or remote).
+    #[cfg(feature = "cluster")]
+    pub fn link_address(&self, target: &spawned_address::ActorAddress) {
+        use crate::cluster::{is_local_address, local_handle, publish_link};
+
+        if is_local_address(target) {
+            let handle = local_handle(target.actor_id).unwrap_or_else(|| {
+                panic!(
+                    "local link target {} is not registered with the supervision broker",
+                    target.actor_id
+                )
+            });
+            self.link(&handle);
+            return;
+        }
+
+        self.remote_links
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(target.clone());
+        publish_link(self.actor_address(), target.clone());
+    }
+
+    /// Remove a previously-set link to a local or remote actor.
+    #[cfg(feature = "cluster")]
+    pub fn unlink_address(&self, target: &spawned_address::ActorAddress) {
+        use crate::cluster::{is_local_address, local_handle, publish_unlink};
+
+        if is_local_address(target) {
+            let handle = local_handle(target.actor_id).unwrap_or_else(|| {
+                panic!(
+                    "local unlink target {} is not registered with the supervision broker",
+                    target.actor_id
+                )
+            });
+            self.unlink(&handle);
+            return;
+        }
+
+        if self
+            .remote_links
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(target)
+        {
+            publish_unlink(self.actor_address(), target.clone());
+        }
+    }
+
     /// Control how exit signals from linked actors are handled.
     ///
     /// - `false` (default): an abnormal exit signal from a linked actor cancels
@@ -535,6 +595,8 @@ pub struct ActorRef<A: Actor> {
     monitors: MonitorTable,
     #[cfg(feature = "cluster")]
     remote_monitors: RemoteMonitorTable,
+    #[cfg(feature = "cluster")]
+    remote_links: RemoteLinkTable,
     trap_exit: TrapExitFlag,
     links: LinkTable,
     linked_reason: LinkedExitReason,
@@ -559,6 +621,8 @@ impl<A: Actor> Clone for ActorRef<A> {
             monitors: self.monitors.clone(),
             #[cfg(feature = "cluster")]
             remote_monitors: self.remote_monitors.clone(),
+            #[cfg(feature = "cluster")]
+            remote_links: self.remote_links.clone(),
             trap_exit: self.trap_exit.clone(),
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
@@ -748,6 +812,8 @@ impl<A: Actor> ActorRef<A> {
         let monitors: MonitorTable = Arc::new(Mutex::new(HashMap::new()));
         #[cfg(feature = "cluster")]
         let remote_monitors: RemoteMonitorTable = Arc::new(Mutex::new(HashMap::new()));
+        #[cfg(feature = "cluster")]
+        let remote_links: RemoteLinkTable = Arc::new(Mutex::new(std::collections::HashSet::new()));
         let trap_exit = new_trap_exit_flag();
         let links = new_link_table();
         let linked_reason = new_linked_exit_reason();
@@ -762,6 +828,8 @@ impl<A: Actor> ActorRef<A> {
             monitors: monitors.clone(),
             #[cfg(feature = "cluster")]
             remote_monitors: remote_monitors.clone(),
+            #[cfg(feature = "cluster")]
+            remote_links: remote_links.clone(),
             trap_exit: trap_exit.clone(),
             links: links.clone(),
             linked_reason: linked_reason.clone(),
@@ -778,6 +846,8 @@ impl<A: Actor> ActorRef<A> {
             monitors,
             #[cfg(feature = "cluster")]
             remote_monitors,
+            #[cfg(feature = "cluster")]
+            remote_links: remote_links.clone(),
             trap_exit,
             links: links.clone(),
             linked_reason: linked_reason.clone(),
@@ -787,6 +857,8 @@ impl<A: Actor> ActorRef<A> {
         };
 
         let actor_id = actor_ref.id;
+        #[cfg(feature = "cluster")]
+        let remote_links_for_exit = remote_links.clone();
         let limits_run = mailbox_limits.clone();
         let inner_future = async move {
             let reason = run_actor(
@@ -801,6 +873,8 @@ impl<A: Actor> ActorRef<A> {
             )
             .await;
             link::propagate_exit(actor_id, &links, &reason);
+            #[cfg(feature = "cluster")]
+            crate::cluster::propagate_remote_link_exits(actor_id, &remote_links_for_exit, &reason);
             pg::remove_actor(actor_id);
             let _ = completion_tx.send(Some(reason));
         };

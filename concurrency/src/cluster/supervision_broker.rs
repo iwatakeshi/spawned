@@ -11,7 +11,7 @@ use spawned_address::{ActorAddress, NodeId};
 use spawned_cluster::{
     SupervisionEnvelope, SupervisionEvent, SupervisionSignal, TransportError, WireExitReason,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -78,6 +78,9 @@ pub struct SupervisionBrokerInner {
     down_owners: RwLock<HashMap<ActorId, SendDownFn>>,
     /// Exit reasons for actors removed from `handles` (late remote monitors).
     exited: RwLock<HashMap<ActorId, ExitReason>>,
+    /// Remote link peers for each local actor (Phase 12.6).
+    link_peers: Arc<RwLock<HashMap<ActorId, Vec<ActorAddress>>>>,
+    link_waits: Arc<RwLock<HashSet<ActorId>>>,
     broker_handle: RwLock<Option<ChildHandle>>,
 }
 
@@ -90,6 +93,8 @@ impl SupervisionBrokerInner {
             monitors: Arc::new(RwLock::new(HashMap::new())),
             down_owners: RwLock::new(HashMap::new()),
             exited: RwLock::new(HashMap::new()),
+            link_peers: Arc::new(RwLock::new(HashMap::new())),
+            link_waits: Arc::new(RwLock::new(HashSet::new())),
             broker_handle: RwLock::new(None),
         }
     }
@@ -208,6 +213,14 @@ impl SupervisionBrokerInner {
                 reason,
             } => {
                 self.apply_down(owner, monitor_ref, reason)?;
+                Ok(None)
+            }
+            SupervisionEvent::Link { a, b } => {
+                self.apply_link(a, b)?;
+                Ok(None)
+            }
+            SupervisionEvent::Unlink { a, b } => {
+                self.apply_unlink(a, b);
                 Ok(None)
             }
             _ => Ok(None),
@@ -437,6 +450,121 @@ impl SupervisionBrokerInner {
             reason: wire_to_exit_reason(reason),
         };
         send_down(down).map_err(|e| TransportError::Protocol(e.to_string()))
+    }
+
+    fn apply_link(&self, a: ActorAddress, b: ActorAddress) -> Result<(), TransportError> {
+        let (local, remote) = if a.node == self.local {
+            (a, b)
+        } else if b.node == self.local {
+            (b, a)
+        } else {
+            return Err(TransportError::Protocol(format!(
+                "Link: neither {} nor {} is on this node ({})",
+                a.node, b.node, self.local
+            )));
+        };
+
+        {
+            let mut peers = self
+                .link_peers
+                .write()
+                .unwrap_or_else(|p| p.into_inner());
+            let entry = peers.entry(local.actor_id).or_default();
+            if !entry.iter().any(|peer| peer == &remote) {
+                entry.push(remote.clone());
+            }
+        }
+
+        if let Some(reason) = self
+            .exited
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&local.actor_id)
+            .cloned()
+        {
+            super::supervision_sync::publish_supervision(child_exit_envelope(
+                local.clone(),
+                remote,
+                &reason,
+            ));
+            return Ok(());
+        }
+
+        let handle = self
+            .handles
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&local.actor_id)
+            .cloned()
+            .ok_or_else(|| {
+                TransportError::Protocol(format!(
+                    "Link: unknown local actor {}",
+                    local.actor_id
+                ))
+            })?;
+
+        if let Some(reason) = handle.exit_reason() {
+            super::supervision_sync::publish_supervision(child_exit_envelope(
+                local,
+                remote,
+                &reason,
+            ));
+            return Ok(());
+        }
+
+        {
+            let mut waits = self
+                .link_waits
+                .write()
+                .unwrap_or_else(|p| p.into_inner());
+            if !waits.insert(local.actor_id) {
+                return Ok(());
+            }
+        }
+
+        let link_peers = self.link_peers.clone();
+        let link_waits = self.link_waits.clone();
+        let local_id = local.actor_id;
+        let local_addr = local;
+
+        remote_spawn::spawn_async_on_runtime(async move {
+            let reason = handle.wait_exit_async().await;
+            link_waits
+                .write()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&local_id);
+            let peers = link_peers
+                .write()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&local_id)
+                .unwrap_or_default();
+            for peer in peers {
+                super::supervision_sync::publish_supervision(child_exit_envelope(
+                    local_addr.clone(),
+                    peer,
+                    &reason,
+                ));
+            }
+        });
+        Ok(())
+    }
+
+    fn apply_unlink(&self, a: ActorAddress, b: ActorAddress) {
+        let (local, remote) = if a.node == self.local {
+            (a, b)
+        } else if b.node == self.local {
+            (b, a)
+        } else {
+            return;
+        };
+        if let Some(peers) = self
+            .link_peers
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(&local.actor_id)
+        {
+            peers.retain(|peer| peer != &remote);
+        }
     }
 
     fn apply_signal(
