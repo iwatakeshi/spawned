@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after Phase 9.1 (restart backoff).
+**Last updated:** after Phase 9.2 (Application wrapper).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -71,8 +71,7 @@ Closes [#132](https://github.com/lambdaclass/spawned/issues/132) and [#133](http
 
 | Item | Notes |
 |------|-------|
-| **Exponential backoff** | Restarts are immediate; no built-in delay between attempts |
-| **OTP `Application` / root supervisor** | No single top-level application wrapper; compose supervisors manually |
+| **OTP `Application` / root supervisor** | ✅ Shipped in Phase 9.2 (`Application` wrapper); nested supervisor-as-child upgrades still deferred |
 | **Supervisor-as-child hot code upgrade** | No built-in code reload or child spec migration |
 | **Interruptible shutdown** | `kill()` does not preempt an in-flight handler or `stopped()`; escalation waits for the actor to return to its loop |
 | **Dynamic supervisor strategies** | `DynamicSupervisor` is **OneForOne only** (Erlang `simple_one_for_one`); no OneForAll / RestForOne at runtime |
@@ -206,9 +205,22 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 
 ### 9–10 (planned)
 
+### 9.1. Restart backoff — shipped
+
+- `RestartBackoff` on `ChildSpec`: `None` (default), `Fixed(Duration)`, `Exponential { base, max }`
+- `.with_backoff(...)` on static and dynamic child specs (tasks + threads)
+- Per-child consecutive attempt tracking in `SupervisorLogic`; resets on non-restarting exit
+
+### 9.2. Application wrapper — shipped
+
+- `Application::builder().start(async |ctx| ...)` — startup callback + OS signal shutdown
+- Optional cluster `Node` via `.name()` / `.listen()` / `.peer()` when `cluster` feature enabled
+- `Application::run()` / `run_blocking()` await root `ChildHandle` exit
+- `examples/http_workers` migrated to `Application` API
+
 | Phase | Focus |
 |-------|--------|
-| **9** | Cluster-safe Kameo parity: backoff, pg scopes, pools, unified ChildSpec |
+| **9** | Remaining Kameo parity: pg scopes, pools, unified ChildSpec |
 | **10** | Federated registry, distributed pg, libp2p transport |
 
 ## Future Considerations
@@ -219,7 +231,7 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 | Distributed process groups | Requires clustering first |
 | Priority message channels | ✅ Shipped in Phase 7 (Signal > Stop > Supervision > Message) |
 | State machines (`gen_statem`) | Protocol implementations |
-| Backoff strategies | Built into supervision |
+| Backoff strategies | ✅ Shipped in Phase 9.1 (`RestartBackoff` on `ChildSpec`) |
 | Persistence / event sourcing | Akka Persistence pattern |
 | Clustering / distribution | Phase 8 in progress — see [CLUSTERING.md](CLUSTERING.md) |
 | Built-in observability | Message latency (mailbox depth shipped in 6c) |

@@ -12,7 +12,7 @@ use spawned_concurrency::tasks::{
     dynamic_supervisor::ChildSpec, pg, Actor, Context, DynamicSupervisor, DynamicSupervisorApi,
     Handler,
 };
-use spawned_concurrency::{MailboxConfig, Node, RestartType};
+use spawned_concurrency::{Application, MailboxConfig, RestartType};
 use spawned_rt::tasks as rt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -115,28 +115,34 @@ fn main() {
         .init();
 
     rt::run(async {
-        let sup = DynamicSupervisor::builder().max_children(8).start();
+        let app = Application::builder()
+            .start(|_ctx| async move {
+                let sup = DynamicSupervisor::builder().max_children(8).start();
 
-        for i in 0..3 {
-            sup.start_child(
-                ChildSpec::worker(
-                    "http_worker",
-                    move || HttpWorker {
-                        name: format!("worker-{i}"),
-                    },
-                    RestartType::Permanent,
-                )
-                .with_mailbox(MailboxConfig::bounded(WORKER_MAILBOX)),
-                None,
-            )
+                for i in 0..3 {
+                    sup.start_child(
+                        ChildSpec::worker(
+                            "http_worker",
+                            move || HttpWorker {
+                                name: format!("worker-{i}"),
+                            },
+                            RestartType::Permanent,
+                        )
+                        .with_mailbox(MailboxConfig::bounded(WORKER_MAILBOX)),
+                        None,
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                }
+
+                rt::sleep(Duration::from_millis(100)).await;
+                Ok(vec![sup.child_handle()])
+            })
             .await
-            .unwrap()
-            .unwrap();
-        }
+            .expect("start application");
 
-        rt::sleep(Duration::from_millis(100)).await;
-
-        let app = Router::new()
+        let router = Router::new()
             .route("/work", post(post_work))
             .route("/stats", get(get_stats))
             .with_state(AppState {
@@ -155,19 +161,13 @@ fn main() {
         println!("Burst POST /work to observe 503 when mailboxes fill.");
         println!("Press Ctrl+C or send SIGTERM to stop.\n");
 
-        let node = Node::builder()
-            .shutdown_on_signal(&[sup.child_handle()])
-            .build()
-            .expect("start node");
-        let _node = node;
-
         rt::spawn(async move {
-            if let Err(err) = axum::serve(listener, app).await {
+            if let Err(err) = axum::serve(listener, router).await {
                 tracing::error!("HTTP server error: {err}");
             }
         });
 
-        sup.join().await;
+        app.run().await;
         println!("\nShutdown complete.");
     });
 }

@@ -30,6 +30,7 @@
 //! - [`tasks::Backend`] enum for choosing async runtime, blocking pool, or OS thread
 //! - [Supervision Guide](https://github.com/lambdaclass/spawned/blob/main/docs/SUPERVISION.md)
 
+pub mod application;
 pub mod child_handle;
 pub mod child_spec;
 pub mod dynamic_supervisor;
@@ -50,6 +51,7 @@ pub mod threads;
 #[cfg(feature = "cluster")]
 pub mod cluster;
 
+pub use application::{Application, ApplicationBuilder, ApplicationContext, ApplicationError};
 pub use child_handle::{ActorId, ChildHandle};
 pub use spawned_address::{ActorAddress, Locality, NodeId, NodeName, local_node};
 pub use spawned_wire::{RemoteActor, RemoteMessage, WireEnvelope, WireError};
