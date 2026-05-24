@@ -18,36 +18,6 @@ Foundation crates (no network):
 - **`spawned-address`** — `NodeId`, `ActorAddress`, `ActorId`, `local_node()`
 - **`spawned-wire`** — `WireEnvelope`, `RemoteActor`, `RemoteMessage`, postcard codec
 
-## Phase 8b (current): router + named registry
-
-Enable with `spawned-concurrency` feature `cluster`:
-
-```toml
-spawned-concurrency = { version = "...", features = ["cluster"] }
-```
-
-- **`spawned-cluster`** — [`ClusterRouter`], [`Transport`] trait, [`UnavailableTransport`] stub
-- **`RemoteActorRef<M>`** — routes by [`ActorAddress::is_local()`]: local `Recipient` or remote transport
-- **Named registry** — `register_named`, `lookup_address`, `unregister_named` (cluster-wide names, local handles)
-
-Remote send/request returns [`ActorError::RemoteUnreachable`] until Phase 8c wires TCP.
-
-```rust
-use spawned_concurrency::{
-    register_named, lookup_address, RemoteActorRef, ClusterRouter,
-};
-
-register_named("worker", child_handle)?;
-let addr = lookup_address("worker").unwrap();
-let remote = RemoteActorRef::<Ping>::local_tasks(addr, recipient);
-remote.send(Ping { n: 1 })?; // local path
-
-let remote_only = RemoteActorRef::<Ping>::remote_global(
-    ActorAddress::on("peer@host".into(), actor_id),
-);
-assert!(remote_only.send(Ping { n: 1 }).is_err()); // stub transport
-```
-
 ### Node identity
 
 Set the local node name before starting actors (default: `spawned@localhost`):
@@ -84,6 +54,46 @@ pub struct Ping {
 
 Stable ids are generated as `spawned.{TypeName}/v1`.
 
+## Phase 8b: router + named registry
+
+Enable with `spawned-concurrency` feature `cluster`:
+
+```toml
+spawned-concurrency = { version = "...", features = ["cluster"] }
+```
+
+- **`spawned-cluster`** — `ClusterRouter`, `Transport`, `UnavailableTransport` stub
+- **`RemoteActorRef<M>`** — local `Recipient` when attached, else transport
+- **Named registry** — `register_named`, `lookup_address`, `lookup_handle`, `unregister_named`
+
+## Phase 8c (current): TCP transport
+
+- **Length-framed TCP** — u32 big-endian + postcard payload; handshake (`PROTOCOL_VERSION`, `NodeId`)
+- **`TcpTransport`** — client-side `Transport` with peer `SocketAddr` map and connection pooling
+- **`TcpClusterListener`** — accept loop + `InboundDispatch` for inbound envelopes
+- **`tasks_wire_dispatch` / `threads_wire_dispatch`** — bridge wire envelopes to local `Recipient`s
+- Integration tests: `cluster/tests/tcp_smoke.rs`, `cluster/tests/two_node.rs`
+
+Remote `request_raw` uses blocking I/O — call from async code via `tokio::task::spawn_blocking` until Phase 8d adds async transport wiring.
+
+```rust
+use spawned_concurrency::{
+    TcpClusterListener, TcpTransport, ClusterRouter, tasks_wire_dispatch, RemoteActorRef,
+};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+let dispatch = tasks_wire_dispatch(address, actor.recipient());
+let listener = TcpClusterListener::bind(listen_addr, local_node, dispatch)?;
+
+let mut peers = HashMap::new();
+peers.insert(remote_node, listener.local_addr());
+let router = Arc::new(ClusterRouter::new(Arc::new(TcpTransport::new(local_node, peers))));
+
+let remote = RemoteActorRef::<Ping>::remote(target_address, router);
+remote.send(Ping { n: 1 })?;
+```
+
 ### Clustering checklist (every feature PR)
 
 1. **Address, not local id** — Public handles that may be grouped or looked up use `ActorAddress`.
@@ -98,8 +108,8 @@ Stable ids are generated as `spawned.{TypeName}/v1`.
 | Phase | Focus |
 |-------|--------|
 | **8a** | Address + wire + pg refactor |
-| **8b** | `ClusterRouter`, `RemoteActorRef`, registry hooks (this document) |
-| **8c** | Pluggable transport, TCP MVP, two-node test |
+| **8b** | `ClusterRouter`, `RemoteActorRef`, registry hooks |
+| **8c** | TCP transport + two-node test (this document) |
 | **8d** | `Node` / `Application` bootstrap |
 | **9** | Cluster-safe parity: backoff, pg scopes, pools, unified ChildSpec |
 | **10** | Federated registry, distributed pg, libp2p transport |

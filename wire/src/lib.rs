@@ -91,6 +91,16 @@ pub fn encode_envelope(envelope: &WireEnvelope) -> Result<Vec<u8>, WireError> {
     postcard::to_allocvec(envelope).map_err(|e| WireError::Encode(e.to_string()))
 }
 
+/// Serialize a reply body (no remote id).
+pub fn encode_reply<R: serde::Serialize>(value: &R) -> Result<Vec<u8>, WireError> {
+    postcard::to_allocvec(value).map_err(|e| WireError::Encode(e.to_string()))
+}
+
+/// Deserialize a reply body (no remote id check).
+pub fn decode_reply<R: for<'de> serde::Deserialize<'de>>(payload: &[u8]) -> Result<R, WireError> {
+    postcard::from_bytes(payload).map_err(|e| WireError::Decode(e.to_string()))
+}
+
 /// Deserialize a full envelope.
 pub fn decode_envelope(bytes: &[u8]) -> Result<WireEnvelope, WireError> {
     postcard::from_bytes(bytes).map_err(|e| WireError::Decode(e.to_string()))

@@ -74,8 +74,10 @@ pub use supervisor::SupervisorStrategy;
 
 #[cfg(feature = "cluster")]
 pub use cluster::{
-    lookup_address, register_named, unregister_named, ClusterRouter, NamedRegistryError,
-    RemoteActorRef, Transport, TransportError, UnavailableTransport,
+    lookup_address, lookup_handle, register_named, unregister_named, tasks_wire_dispatch, threads_wire_dispatch,
+    ClusterRouter, InboundDispatch, NamedRegistryError, RemoteActorRef, RemoteRequest,
+    TcpClusterListener, TcpTransport, Transport, TransportError, UnavailableTransport,
+    WireReply, PROTOCOL_VERSION,
 };
 
 #[cfg(test)]

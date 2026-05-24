@@ -1,6 +1,6 @@
 # Spawned Roadmap
 
-**Last updated:** after Phase 8b (cluster router + named registry).
+**Last updated:** after Phase 8c (TCP transport MVP).
 
 For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
 
@@ -188,14 +188,19 @@ Full four-tier mailbox priority: **Signal > Stop > Supervision > Message**.
 
 - **`spawned-cluster`** — `ClusterRouter`, `Transport`, `UnavailableTransport` stub
 - **`RemoteActorRef<M>`** — locality-aware send/request (`cluster` feature on `spawned-concurrency`)
-- **Named registry** — `register_named` / `lookup_address` / `unregister_named`
-- Remote path returns `ActorError::RemoteUnreachable` until 8c
+- **Named registry** — `register_named` / `lookup_address` / `lookup_handle` / `unregister_named`
 
-### 8c–10 (planned)
+### 8c. TCP transport MVP — shipped
+
+- Length-framed TCP + node handshake
+- `TcpTransport`, `TcpClusterListener`, `InboundDispatch`
+- `tasks_wire_dispatch` / `threads_wire_dispatch` for inbound actor delivery
+- Two-node integration tests in `spawned-cluster`
+
+### 8d–10 (planned)
 
 | Phase | Focus |
 |-------|--------|
-| **8c** | Pluggable transport, TCP MVP, two-node integration test |
 | **8d** | `Node` / `Application` bootstrap (Kameo `bootstrap` parity, OTP-shaped) |
 | **9** | Cluster-safe Kameo parity: backoff, pg scopes, pools, unified ChildSpec |
 | **10** | Federated registry, distributed pg, libp2p transport |

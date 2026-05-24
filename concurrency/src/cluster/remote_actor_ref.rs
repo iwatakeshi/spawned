@@ -28,7 +28,7 @@ impl<M: Message> LocalRecipient<M> {
     }
 }
 
-enum RequestRx<M: Message> {
+pub enum RequestRx<M: Message> {
     Tasks(spawned_rt::tasks::oneshot::Receiver<M::Result>),
     Threads(spawned_rt::threads::oneshot::Receiver<M::Result>),
 }
@@ -107,11 +107,9 @@ impl<M: Message> RemoteActorRef<M> {
         M: RemoteMessage,
     {
         if self.address.is_local() {
-            let local = self
-                .local
-                .as_ref()
-                .ok_or(ActorError::ActorStopped)?;
-            return local.send(msg);
+            if let Some(local) = self.local.as_ref() {
+                return local.send(msg);
+            }
         }
 
         let envelope = WireEnvelope::fire_and_forget(self.address.clone(), &msg)?;
@@ -121,44 +119,45 @@ impl<M: Message> RemoteActorRef<M> {
     }
 
     /// Raw request channel, routing locally or remotely.
-    ///
-    /// Remote requests are not yet supported until Phase 8c; returns
-    /// [`ActorError::RemoteUnreachable`] from the stub transport.
     pub fn request_raw(&self, msg: M) -> Result<RemoteRequest<M>, ActorError>
     where
         M: RemoteMessage,
     {
         if self.address.is_local() {
-            let local = self
-                .local
-                .as_ref()
-                .ok_or(ActorError::ActorStopped)?;
-            let rx = local.request_raw(msg)?;
-            return Ok(RemoteRequest::Local(rx));
+            if let Some(local) = self.local.as_ref() {
+                let rx = local.request_raw(msg)?;
+                return Ok(RemoteRequest::Local(rx));
+            }
         }
 
         let correlation_id = next_correlation_id();
         let envelope = WireEnvelope::request(self.address.clone(), &msg, correlation_id)?;
-        let _payload = self
+        let payload = self
             .router
             .request_remote(envelope)
             .map_err(map_transport_error)?;
-        Ok(RemoteRequest::Remote)
+        Ok(RemoteRequest::Remote(payload))
     }
 }
 
 /// Opaque request handle for local or remote replies.
 pub enum RemoteRequest<M: Message> {
     Local(RequestRx<M>),
-    Remote,
+    Remote(Vec<u8>),
 }
 
 impl<M: Message> RemoteRequest<M> {
     /// Wait for the reply (async; threads mode uses blocking recv internally).
-    pub async fn recv(self) -> Result<M::Result, ActorError> {
+    pub async fn recv(self) -> Result<M::Result, ActorError>
+    where
+        M::Result: for<'de> serde::Deserialize<'de>,
+    {
         match self {
             Self::Local(rx) => rx.recv().await,
-            Self::Remote => Err(ActorError::RemoteUnreachable),
+            Self::Remote(payload) => spawned_wire::decode_reply(&payload).map_err(|e| {
+                tracing::error!("wire reply decode error: {e}");
+                ActorError::RemoteUnreachable
+            }),
         }
     }
 }
@@ -168,6 +167,14 @@ fn map_transport_error(err: spawned_cluster::TransportError) -> ActorError {
         spawned_cluster::TransportError::RemoteUnreachable => ActorError::RemoteUnreachable,
         spawned_cluster::TransportError::Wire(e) => {
             tracing::error!("wire error during remote send: {e}");
+            ActorError::RemoteUnreachable
+        }
+        spawned_cluster::TransportError::Io(e) => {
+            tracing::error!("transport io error: {e}");
+            ActorError::RemoteUnreachable
+        }
+        spawned_cluster::TransportError::Protocol(e) => {
+            tracing::error!("transport protocol error: {e}");
             ActorError::RemoteUnreachable
         }
     }

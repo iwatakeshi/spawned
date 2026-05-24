@@ -1458,10 +1458,16 @@ dependencies = [
 name = "spawned-cluster"
 version = "0.5.0"
 dependencies = [
+ "postcard",
  "serde",
  "spawned-address",
+ "spawned-concurrency",
+ "spawned-rt",
  "spawned-wire",
  "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
