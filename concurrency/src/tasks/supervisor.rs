@@ -13,8 +13,8 @@ use crate::supervisor::{
 
 #[cfg(feature = "cluster")]
 use crate::cluster::{
-    remote_spawn_spec_from_inner, request_spawn_async, shutdown_remote, RemoteChildHandle,
-    RemoteSpawnMeta,
+    remote_spawn_spec_from_inner, request_spawn_with_retry_async, shutdown_remote_and_wait,
+    RemoteChildHandle, RemoteSpawnMeta, RemoteSpawnRetryPolicy,
 };
 #[cfg(feature = "cluster")]
 use crate::cluster::Placement;
@@ -124,7 +124,14 @@ impl Supervisor {
             return;
         };
         let parent = ctx.actor_address();
-        let address = match request_spawn_async(&placement, parent.clone(), wire_spec.clone(), true).await {
+        let address = match request_spawn_with_retry_async(
+            &placement,
+            parent.clone(),
+            wire_spec.clone(),
+            true,
+            RemoteSpawnRetryPolicy::default(),
+        )
+        .await {
             Ok(address) => address,
             Err(err) => {
                 tracing::error!(child_id = %spec.id, error = %err, "remote child start failed");
@@ -166,11 +173,12 @@ impl Supervisor {
         self.remote_actor_to_id.retain(|_, id| id != child_id);
 
         let parent = ctx.actor_address();
-        let address = match request_spawn_async(
+        let address = match request_spawn_with_retry_async(
             &meta.placement,
             parent.clone(),
             meta.spec.clone(),
             meta.link,
+            RemoteSpawnRetryPolicy::default(),
         )
         .await
         {
@@ -222,7 +230,11 @@ impl Supervisor {
             #[cfg(feature = "cluster")]
             if let Some(remote) = self.remote_handles.get(id) {
                 if self.logic.is_child_alive(id) {
-                    let _ = shutdown_remote(remote, shutdown);
+                    let actor_id = remote.address().actor_id;
+                    if let Err(err) = shutdown_remote_and_wait(remote, shutdown).await {
+                        tracing::warn!(child_id = %id, error = %err, "remote child shutdown wait failed");
+                    }
+                    self.logic.mark_child_dead(actor_id);
                 }
                 continue;
             }
@@ -345,7 +357,9 @@ impl Actor for Supervisor {
             }
             #[cfg(feature = "cluster")]
             if let Some(remote) = self.remote_handles.get(&id) {
-                let _ = shutdown_remote(remote, shutdown);
+                if let Err(err) = shutdown_remote_and_wait(remote, shutdown).await {
+                    tracing::warn!(child_id = %id, error = %err, "remote child shutdown wait failed");
+                }
             }
         }
         self.handles.clear();

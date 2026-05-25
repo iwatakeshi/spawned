@@ -172,10 +172,10 @@ The supervisor calls `register_supervision_actor` in `started()` so inbound `Chi
 For **OneForAll** and **RestForOne**:
 
 - **Local children** — `terminate_children` blocks until each child exits (per `ShutdownType`)
-- **Remote children** — shutdown is **signal-only**; the supervisor marks the child dead when `ChildExit` arrives
-- **Mixed batches** — batch restart may complete on a subsequent exit message while `suppress_restarts` is set
+- **Remote children** — `shutdown_remote_and_wait` blocks until `ChildExit` arrives at the home broker (mirrors local `shutdown_child_async`, including timeout → kill escalation)
+- **Mixed batches** — batch restart completes in the same `terminate_children` call when all targets honor their shutdown policy
 
-On supervisor shutdown (`stopped()`), remaining remote children receive shutdown signals in reverse start order (fire-and-forget).
+On supervisor shutdown (`stopped()`), remaining remote children are shut down in reverse start order with the same wait semantics.
 
 See [CLUSTERING.md — Phase 12.7](CLUSTERING.md#phase-127-static-supervisor-remote-placement-shipped), [API-GUIDE — Remote child specs](API-GUIDE.md#remote-child-specs-feature-cluster), and [`cluster_supervised_workers`](../examples/cluster_supervised_workers).
 

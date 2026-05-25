@@ -15,7 +15,10 @@ use crate::supervisor::{
 };
 
 #[cfg(feature = "cluster")]
-use crate::cluster::{request_spawn_async, shutdown_remote, RemoteChildHandle, RemoteSpawnMeta};
+use crate::cluster::{
+    request_spawn_with_retry_async, shutdown_remote_and_wait, RemoteChildHandle, RemoteSpawnMeta,
+    RemoteSpawnRetryPolicy,
+};
 #[cfg(feature = "cluster")]
 use spawned_address::NodeId;
 #[cfg(feature = "cluster")]
@@ -279,8 +282,14 @@ impl DynamicSupervisor {
         let parent = ctx.actor_address();
         let spec_for_rpc = spec.clone();
         let placement_for_rpc = placement.clone();
-        let address = request_spawn_async(&placement_for_rpc, parent, spec_for_rpc, link)
-            .await
+        let address = request_spawn_with_retry_async(
+            &placement_for_rpc,
+            parent,
+            spec_for_rpc,
+            link,
+            RemoteSpawnRetryPolicy::default(),
+        )
+        .await
             .map_err(|e| DynamicSupervisorError::RemoteSpawn(e.to_string()))?;
 
         let remote = RemoteChildHandle::new(address.clone(), ctx.actor_address());
@@ -322,7 +331,14 @@ impl DynamicSupervisor {
         let placement = meta.placement.clone();
         let spec = meta.spec.clone();
         let link = meta.link;
-        let address = match request_spawn_async(&placement, parent, spec, link).await {
+        let address = match request_spawn_with_retry_async(
+            &placement,
+            parent,
+            spec,
+            link,
+            RemoteSpawnRetryPolicy::default(),
+        )
+        .await {
             Ok(address) => address,
             Err(err) => {
                 tracing::error!(child_id, error = %err, "remote child restart failed");
@@ -393,9 +409,9 @@ impl DynamicSupervisor {
                     .get(&child_id)
                     .map(|spec| spec.shutdown)
                     .unwrap_or(ShutdownType::Infinity);
-                shutdown_remote(&remote, shutdown).map_err(|e| {
-                    DynamicSupervisorError::RemoteSpawn(e.to_string())
-                })?;
+                shutdown_remote_and_wait(&remote, shutdown)
+                    .await
+                    .map_err(|e| DynamicSupervisorError::RemoteSpawn(e.to_string()))?;
                 self.remote_actor_to_id.remove(&actor_id);
                 self.remote_spawn_meta.remove(&child_id);
                 self.logic.remove_child_by_id(&child_id);
@@ -495,15 +511,18 @@ impl Actor for DynamicSupervisor {
             if let Some(handle) = self.handles.get(&id) {
                 shutdown_child_async(handle, shutdown).await;
             }
+            #[cfg(feature = "cluster")]
+            if let Some(remote) = self.remote_handles.get(&id) {
+                if let Err(err) = shutdown_remote_and_wait(remote, shutdown).await {
+                    tracing::warn!(child_id = %id, error = %err, "remote child shutdown wait failed");
+                }
+            }
         }
         self.specs.clear();
         self.handles.clear();
         self.actor_to_id.clear();
         #[cfg(feature = "cluster")]
         {
-            for remote in self.remote_handles.values() {
-                let _ = shutdown_remote(remote, ShutdownType::Infinity);
-            }
             self.remote_handles.clear();
             self.remote_actor_to_id.clear();
             self.remote_spawn_meta.clear();

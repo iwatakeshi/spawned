@@ -3,6 +3,7 @@
 use crate::child_handle::{ActorId, ChildHandle};
 use crate::cluster::remote_spawn;
 use crate::cluster::supervision_exit::{child_exit_envelope, wire_to_exit_reason};
+use crate::cluster::supervision_remote::complete_remote_shutdown_wait;
 use crate::cluster::supervision_monitor::{self, SendDownFn};
 use crate::error::ExitReason;
 use crate::link::Exit;
@@ -309,6 +310,7 @@ impl SupervisionBrokerInner {
                     parent.actor_id
                 ))
             })?;
+        complete_remote_shutdown_wait(child.actor_id);
         let exit = Exit {
             from: child,
             reason: wire_to_exit_reason(reason),

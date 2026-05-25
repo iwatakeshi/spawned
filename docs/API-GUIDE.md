@@ -759,7 +759,7 @@ let sup = Supervisor::builder()
 
 Local `ChildSpec::worker(...)` closures **cannot** run on a remote node — always use `remote_*` constructors for remote placement.
 
-**Caveats:** remote shutdown is signal-only (no cross-node wait). Mixed local+remote batch terminate may complete asynchronously. See [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md).
+**Caveats:** remote shutdown honors `ShutdownType` with cross-node wait (Phase 13). See [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md).
 
 Runtime remote spawn on dynamic supervisors:
 

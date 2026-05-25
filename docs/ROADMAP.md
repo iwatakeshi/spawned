@@ -384,7 +384,7 @@ Deferred to **12.6+**: cross-node link (12.6), static supervisor remote placemen
 - `ChildSpec::remote_named` / `ChildSpec::remote_worker` — declarative remote children with `Placement::Remote(node)`
 - Inner `ChildSpec` gains `placement` + `RemoteChildSpec`; shared helpers in `cluster/supervision_remote.rs`
 - Static `Supervisor` (tasks + threads): remote spawn/restart/shutdown, `register_supervision_actor` in `started()`
-- OneForAll / RestForOne batch terminate: local children block until dead; remote children signal-only (batch completes on subsequent `ChildExit`); skip shutdown for already-dead remotes
+- OneForAll / RestForOne batch terminate: local children block until dead; remote children use `shutdown_remote_and_wait` (Phase 13); skip shutdown for already-dead remotes
 - Batch restart restarts remote children before local children
 - `DynamicSupervisor` refactored to shared `RemoteSpawnMeta` + spawn/shutdown helpers
 - Named-spec inbound spawn dispatches onto the tasks runtime (same as workers)
@@ -407,6 +407,19 @@ See [Production path](#production-path) and [PRODUCTION_READINESS.md](PRODUCTION
 |-------|--------|
 | **12.8** | Production readiness docs + clustered supervisor example — shipped |
 
+### 13. Operational hardening — shipped
+
+- `shutdown_remote_and_wait` / `shutdown_remote_and_wait_blocking` — mirror local `shutdown_child_async` (BrutalKill, Infinity, Timeout → kill escalation)
+- Wait registry completed on `ChildExit` in `SupervisionBroker::apply_child_exit` (before `Exit` delivery to supervisor)
+- Wired at all lifecycle sites: static supervisor `terminate_children` / `stopped`, dynamic supervisor terminate / `stopped`
+- `request_spawn_with_retry_*` — transport errors retry on remote restart (default 3 attempts, 50ms exp cap 2s)
+- [CHANGELOG.md](../CHANGELOG.md) + CLUSTERING [Protocol stability](CLUSTERING.md#protocol-stability)
+- Integration tests: `supervision_remote_shutdown_wait_two_node.rs`; tightened `supervision_static_remote_batch_two_node.rs`
+
+| Phase | Focus |
+|-------|--------|
+| **13** | Operational hardening — remote shutdown wait, spawn retry, protocol stability docs — shipped |
+
 ## Production path
 
 Canonical reference: **[PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)** — capability matrix, app patterns, sharp edges, and v1.0 checklist.
@@ -424,7 +437,7 @@ Canonical reference: **[PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)** — 
 | Phase | Focus | Status |
 |-------|--------|--------|
 | **12.8** | Docs + `cluster_supervised_workers` example; API-GUIDE remote child specs | Shipped |
-| **13** | Operational hardening — cross-node shutdown wait, batch terminate, spawn retry | Planned |
+| **13** | Operational hardening — cross-node shutdown wait, batch terminate, spawn retry | Shipped |
 | **14** | Observability — supervision tracing, metrics hooks, node readiness | Planned |
 | **15** | Production validation — 3+ node tests, partition/reconnect, libp2p parity | Planned |
 | **16** | v1.0 stabilization — semver, CHANGELOG, security posture, doc sweep | Planned |

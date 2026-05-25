@@ -1,6 +1,6 @@
 # Production Readiness
 
-**Last updated:** after Phase 12.7 (static supervisor remote placement).
+**Last updated:** after Phase 13 (operational hardening).
 
 Spawned is a Rust actor framework inspired by Erlang OTP. This document summarizes **what you can build today**, **known limitations**, and the **path to v1.0 production completion**.
 
@@ -19,7 +19,6 @@ For phase-by-phase history, see [ROADMAP.md](ROADMAP.md). For clustering details
 **Spawned is not yet production-complete for:**
 
 - Location-transparent “spawn anywhere” distributed actors
-- Cross-node graceful shutdown with wait/timeout guarantees
 - Full OTP parity (group monitors, persistence, hot code upgrade, `gen_statem`)
 - Enterprise ops out of the box (TLS/mTLS, rich metrics, partition chaos validation)
 
@@ -82,6 +81,8 @@ flowchart LR
 | Remote spawn | Shipped | `register_remote_worker/spec`, `DynamicSupervisor::start_child_remote` |
 | Remote supervision loop | Shipped | ChildExit, remote restart, monitor/link propagation |
 | Static remote placement | Shipped (12.7) | `ChildSpec::remote_named`, `remote_worker` |
+| Remote shutdown wait | Shipped (13) | `shutdown_remote_and_wait` in terminate/stopped; ChildExit completes wait |
+| Remote spawn retry | Shipped (13) | Transport errors retry on restart (3 attempts, exp backoff) |
 
 **Examples:** [`cluster_ping_pong`](../examples/cluster_ping_pong), [`cluster_supervised_workers`](../examples/cluster_supervised_workers), [`http_workers`](../examples/http_workers)
 
@@ -108,10 +109,9 @@ flowchart LR
 
 | Limitation | Impact | Workaround |
 |------------|--------|------------|
-| Remote shutdown is signal-only | Supervisor cannot block until remote child exits | Design for eventual consistency; use `ChildExit` for restart decisions |
-| Mixed local+remote batch terminate | OneForAll/RestForOne may complete after async remote exits | Allow extra time before assuming batch done; see [SUPERVISION.md](SUPERVISION.md) |
 | Explicit placement only | You choose target `NodeId` | Register workers on known nodes; use federated registry for discovery |
 | No nested remote supervisor subtrees | Cannot spawn whole remote tree as one child | Flatten: remote workers only, supervisor stays on home node |
+| Remote spawn transport blips | Restart retries up to 3× with exponential backoff (50ms base, 2s cap) | Permanent errors (`SpawnFailed`, `InvalidReply`) still drop the child |
 | `DynamicSupervisor` OneForOne only | No runtime OneForAll pools | Use static `Supervisor` for batch-restart trees |
 | `ctx.actor_address()` on remote node | Returns `local_node()` (process-global) | Use spawn RPC return address or `ActorAddress::on(node, id)` for signals |
 
@@ -163,14 +163,14 @@ flowchart LR
 
 **Acceptance:** New users can run the clustered supervisor example and find `remote_*` APIs in API-GUIDE without reading source.
 
-### Phase 13 — Operational hardening
+### Phase 13 — Operational hardening — shipped
 
-| Item | Rationale | Touch points |
-|------|-----------|--------------|
-| Cross-node shutdown wait | Graceful drain of remote children with timeout | `supervision_remote.rs`, supervisor `terminate_children` / `stopped` |
-| Batch terminate semantics | Tighten or document mixed local+remote completion | `tasks/supervisor.rs`, `threads/supervisor.rs` |
-| Remote spawn failure policy | Retry/backoff on transport errors during restart | Supervisor restart path |
-| Wire protocol stability policy | Breaking-change rules for v3+ | CLUSTERING.md, CHANGELOG |
+- [x] Cross-node shutdown wait (`shutdown_remote_and_wait`, broker `ChildExit` hook)
+- [x] Batch terminate semantics for mixed local+remote trees
+- [x] Remote spawn transport retry on restart
+- [x] [CHANGELOG.md](../CHANGELOG.md) + CLUSTERING protocol stability section
+
+**Acceptance:** Remote `stopped()` / `terminate_children` block until `ChildExit`; batch test passes with strict timing; transport errors retry before child removal.
 
 ### Phase 14 — Observability
 
@@ -223,7 +223,7 @@ Not blocking v1.0 — track in [ROADMAP.md](ROADMAP.md) Future Considerations:
 **Wait or plan extra work if:**
 
 - You need location-transparent spawn (no explicit `NodeId`)
-- You require synchronous cross-node shutdown guarantees
+- You require synchronous cross-node shutdown guarantees — **shipped in Phase 13** for supervisor terminate/stopped paths; validate under your SLOs in Phase 15
 - You need Akka Persistence–style event sourcing
 - You require battle-tested partition tolerance at scale (validate in Phase 15 first)
 

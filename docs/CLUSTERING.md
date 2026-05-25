@@ -334,10 +334,26 @@ Supervisor::builder()
 - **`ChildSpec::remote_named(id, spec_name, node, restart)`** — placement-node registry lookup via `register_remote_spec`
 - **`ChildSpec::remote_worker(id, worker_type, init, node, restart)`** — `init` serialized with postcard at spec-build time
 - Static supervisor auto-registers with `register_supervision_actor` and spawns remotes with `link=true` in `started()`
-- Remote restart re-issues `request_spawn`; remote shutdown in `stopped()` / batch terminate is signal-based (no cross-node shutdown wait in 12.7)
-- **Batch terminate caveat:** mixed local+remote batches complete when all targeted children are marked dead — remotes may finish asynchronously after local blocking shutdown
+- Remote restart re-issues `request_spawn_with_retry` on transport errors; remote shutdown in `stopped()` / batch terminate blocks until `ChildExit` (Phase 13)
+- **Batch terminate:** mixed local+remote batches complete in one `terminate_children` call when all targets honor their `ShutdownType`
 
-Integration tests: `concurrency/tests/supervision_static_remote_*_two_node.rs`.
+Integration tests: `concurrency/tests/supervision_static_remote_*_two_node.rs`, `supervision_remote_shutdown_wait_two_node.rs`.
+
+## Protocol stability
+
+Cluster wire compatibility is governed by `PROTOCOL_VERSION` in `spawned-cluster` (currently **3**).
+
+| Rule | Detail |
+|------|--------|
+| Handshake | Peers exchange version; mismatch rejects the connection |
+| libp2p id | `/spawned/cluster/N` matches `PROTOCOL_VERSION` |
+| Breaking changes | Bump version + protocol id; document in [CHANGELOG.md](../CHANGELOG.md) |
+| Additive changes | Same version when old peers can ignore new fields/events safely |
+| Rolling upgrades | Safe only within the same `PROTOCOL_VERSION` unless docs say otherwise |
+
+Phase 13 (remote shutdown wait, spawn retry) did **not** change the wire — supervisors wait on existing `ChildExit` delivery.
+
+See [CHANGELOG.md](../CHANGELOG.md) for version history.
 
 ### Clustering checklist (every feature PR)
 
@@ -370,5 +386,6 @@ Integration tests: `concurrency/tests/supervision_static_remote_*_two_node.rs`.
 | **12.6** | Cross-node link propagation (this document) |
 | **12.7** | Static supervisor remote placement (this document) |
 | **12.8** | Production readiness docs + example (see [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)) |
+| **13** | Operational hardening — remote shutdown wait, batch terminate, spawn retry (see [CHANGELOG.md](../CHANGELOG.md)) |
 
 See [ROADMAP.md](ROADMAP.md) for full detail. For production readiness and the path to v1.0, see [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md).

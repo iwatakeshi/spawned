@@ -137,11 +137,16 @@ async fn static_supervisor_one_for_all_restarts_local_and_remote() {
         })
         .unwrap();
 
-    for _ in 0..100 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
         if REMOTE_STARTS.load(Ordering::SeqCst) >= 2 && local_starts.load(Ordering::SeqCst) >= 2 {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "OneForAll batch should complete restarts within 500ms (no async remote slack)"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert_eq!(
         REMOTE_STARTS.load(Ordering::SeqCst),
