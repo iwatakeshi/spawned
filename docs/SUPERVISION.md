@@ -131,7 +131,53 @@ Tune intensity for crash-looping dependencies: too low causes unnecessary meltdo
 
 When the supervisor stops, `stopped()` runs with `suppress_restarts` set. Children are shut down in **reverse start order** using each spec's `ShutdownType`. Permanent children receive `ExitReason::Shutdown` and are not restarted.
 
-**Deferred from static supervisor MVP:** exponential backoff between restarts, OTP-style `Application` wrapper, and interruptible shutdown (see [ROADMAP](ROADMAP.md)).
+**Deferred from static supervisor MVP:** interruptible shutdown (see [ROADMAP](ROADMAP.md)). Backoff (`ChildSpec::with_backoff`) and `Application` wrapper are shipped.
+
+## Remote children (feature `cluster`)
+
+Static supervisors can mix **local** and **remote** children in one declarative tree (Phase 12.7). Remote children are spawned on a placement node via the supervision control plane (`SpawnRequest` with `link=true`). When a remote child exits, the placement node publishes `ChildExit` to the supervisor's node; the supervisor restarts per its strategy.
+
+```rust
+use spawned_address::NodeId;
+use spawned_concurrency::tasks::{register_remote_worker, ChildSpec, Supervisor};
+use spawned_concurrency::{RestartType, SupervisorStrategy};
+
+register_remote_worker::<Worker, WorkerInit>("spawned.Worker/v1", |init| Worker::new(init))?;
+
+let worker_node = NodeId::new("worker@10.0.0.2");
+
+let sup = Supervisor::builder()
+    .strategy(SupervisorStrategy::OneForOne)
+    .child(ChildSpec::worker("local", || LocalWorker::new(), RestartType::Permanent))
+    .child(ChildSpec::remote_worker(
+        "remote",
+        "spawned.Worker/v1",
+        WorkerInit { .. },
+        worker_node,
+        RestartType::Permanent,
+    ))
+    .start();
+```
+
+| API | When to use |
+|-----|-------------|
+| `ChildSpec::remote_worker` | Worker type registered with `register_remote_worker` on placement node |
+| `ChildSpec::remote_named` | Named template registered with `register_remote_spec` |
+| `DynamicSupervisor::start_child_remote` | Runtime pools — spawn remote children after supervisor starts |
+
+The supervisor calls `register_supervision_actor` in `started()` so inbound `ChildExit` messages are delivered as trapped `Exit` events.
+
+### Batch terminate with remote children
+
+For **OneForAll** and **RestForOne**:
+
+- **Local children** — `terminate_children` blocks until each child exits (per `ShutdownType`)
+- **Remote children** — shutdown is **signal-only**; the supervisor marks the child dead when `ChildExit` arrives
+- **Mixed batches** — batch restart may complete on a subsequent exit message while `suppress_restarts` is set
+
+On supervisor shutdown (`stopped()`), remaining remote children receive shutdown signals in reverse start order (fire-and-forget).
+
+See [CLUSTERING.md — Phase 12.7](CLUSTERING.md#phase-127-static-supervisor-remote-placement-shipped), [API-GUIDE — Remote child specs](API-GUIDE.md#remote-child-specs-feature-cluster), and [`cluster_supervised_workers`](../examples/cluster_supervised_workers).
 
 ## DynamicSupervisor
 
@@ -177,6 +223,7 @@ let handle = sup
 | **Separate `ChildSpec` type** | ✅ Unified in Phase 9.5 — use `tasks::ChildSpec` for static and dynamic supervisors |
 | **Auto pg membership** | ✅ `ChildSpec::with_pg_group` / `with_pg_group_scoped`; or call `pg::join` in `started()` |
 | **Backoff between restarts** | ✅ `ChildSpec::with_backoff` (Phase 9.1) |
+| **Remote spawn at runtime** | ✅ `DynamicSupervisor::start_child_remote` (Phase 12.3) |
 
 ## Process groups
 
@@ -201,7 +248,7 @@ for worker in pg::members::<Worker>("handlers") {
 
 Actors auto-leave all groups on exit. See [API Guide — Process Groups](API-GUIDE.md#process-groups) (tasks and threads examples), [`pg_workers`](../examples/pg_workers), and integration tests in [`pg_integration.rs`](../concurrency/tests/pg_integration.rs).
 
-**Deferred:** scopes, group membership monitors, distributed pg, built-in cast/call helpers. See [ROADMAP](ROADMAP.md).
+**Deferred:** group membership monitors. Scopes, distributed pg, and cast/call helpers are shipped — see [ROADMAP](ROADMAP.md).
 
 ## ChildHandle lifecycle
 

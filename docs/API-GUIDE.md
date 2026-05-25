@@ -691,6 +691,11 @@ let spec = spec.with_mailbox(MailboxConfig::bounded(100));
 let spec = spec.with_pg_group("handlers");
 // Scoped group (overlay network):
 let spec = spec.with_pg_group_scoped("tenant-a", "handlers");
+// Backoff between restarts:
+let spec = spec.with_backoff(RestartBackoff::exponential(
+    Duration::from_millis(100),
+    Duration::from_secs(5),
+));
 
 // Nested supervisor:
 let nested = ChildSpec::supervisor("sup", || inner_supervisor(), RestartType::Permanent);
@@ -710,6 +715,69 @@ let sup = Supervisor::builder()
     .start();  // returns ActorRef<Supervisor>
 ```
 
+#### Remote child specs (feature `cluster`)
+
+Register worker types on the **placement node**, then declare remote children in the supervisor builder. Remote children spawn with `link=true`; the supervisor receives `ChildExit` and restarts per strategy.
+
+```rust
+use spawned_address::NodeId;
+use spawned_concurrency::tasks::{register_remote_worker, register_remote_spec, ChildSpec, Supervisor};
+
+// On the worker node (before listen):
+register_remote_worker::<Counter, CounterInit>("spawned.Counter/v1", |init| Counter {
+    value: init.start,
+})?;
+
+register_remote_spec("spawned.api/v1", || {
+    ChildSpec::worker("api", || ApiServer::new(), RestartType::Permanent)
+})?;
+
+let worker_node = NodeId::new("worker@10.0.0.2");
+
+let sup = Supervisor::builder()
+    .child(ChildSpec::worker("local", || LocalWorker::new(), RestartType::Permanent))
+    .child(ChildSpec::remote_worker(
+        "remote",
+        "spawned.Counter/v1",
+        CounterInit { start: 0 },
+        worker_node.clone(),
+        RestartType::Permanent,
+    ))
+    .child(ChildSpec::remote_named(
+        "api",
+        "spawned.api/v1",
+        worker_node,
+        RestartType::Permanent,
+    ))
+    .start();
+```
+
+| Constructor | Wire spec | Notes |
+|-------------|-----------|-------|
+| `ChildSpec::remote_worker(id, type, init, node, restart)` | `RemoteSpawnSpec::Worker` | `init` serialized with postcard at spec-build time |
+| `ChildSpec::remote_named(id, spec_name, node, restart)` | `RemoteSpawnSpec::NamedSpec` | Requires `register_remote_spec` on placement node |
+
+Local `ChildSpec::worker(...)` closures **cannot** run on a remote node — always use `remote_*` constructors for remote placement.
+
+**Caveats:** remote shutdown is signal-only (no cross-node wait). Mixed local+remote batch terminate may complete asynchronously. See [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md).
+
+Runtime remote spawn on dynamic supervisors:
+
+```rust
+use spawned_cluster::RemoteSpawnSpec;
+
+let remote = sup
+    .start_child_remote(
+        RemoteSpawnSpec::Worker {
+            worker_type: "spawned.Counter/v1".into(),
+            init: postcard::to_allocvec(&CounterInit { start: 1 })?,
+        },
+        worker_node,
+    )
+    .await?
+    .unwrap();
+```
+
 The supervisor enables `trap_exit(true)` in `started()`, links each child via `start_linked`, and handles `exit_received` internally:
 
 - **OneForOne** — restart only the dead child (if policy and intensity allow)
@@ -719,9 +787,9 @@ The supervisor enables `trap_exit(true)` in `started()`, links each child via `s
 
 On supervisor shutdown, children are stopped in reverse start order using each spec's `ShutdownType`. Batch termination (OneForAll / RestForOne) waits for each child to exit before restarting survivors.
 
-See the [`supervised_workers`](../examples/supervised_workers) example, [`dynamic_workers`](../examples/dynamic_workers), and the [Supervision Guide](SUPERVISION.md). Manual linking is shown in [`exit_reason`](../examples/exit_reason) Scenario 9.
+See the [`supervised_workers`](../examples/supervised_workers) example, [`dynamic_workers`](../examples/dynamic_workers), [`cluster_supervised_workers`](../examples/cluster_supervised_workers), and the [Supervision Guide](SUPERVISION.md). Manual linking is shown in [`exit_reason`](../examples/exit_reason) Scenario 9.
 
-**Deferred from static supervisor MVP:** exponential backoff, OTP `Application` wrapper, interruptible shutdown. See [ROADMAP](ROADMAP.md).
+**Deferred from static supervisor MVP:** interruptible shutdown. Backoff and `Application` wrapper are shipped (Phases 9.1 / 9.2). See [ROADMAP](ROADMAP.md).
 
 ### DynamicSupervisor
 
@@ -772,8 +840,9 @@ See [`dynamic_workers`](../examples/dynamic_workers).
 | Item | Notes |
 |------|-------|
 | **Restart strategies** | OneForOne only; no OneForAll / RestForOne for runtime pools |
-| **Backoff** | Immediate restart on crash; no exponential delay |
+| **Backoff** | ✅ Use `ChildSpec::with_backoff` (Phase 9.1) |
 | **Process group integration** | ✅ Use `ChildSpec::with_pg_group` or join manually in `started()` |
+| **Remote spawn** | ✅ `DynamicSupervisor::start_child_remote` (Phase 12.3) |
 
 ## Response\<T\>
 
@@ -937,6 +1006,9 @@ Enable with `spawned-concurrency = { features = ["cluster"] }`. See [CLUSTERING.
 | `RemoteActorRef::<M>::remote(address, router)` | Address-aware local/remote handle |
 | `remote.request_async(msg).await` | Async request (preferred in tasks mode) |
 | `remote.request_raw(msg)` | Sync request; use from threads mode or with `spawn_blocking` |
+| `register_remote_worker` / `register_remote_spec` | Register spawn templates on this node (supervision) |
+| `ChildSpec::remote_worker` / `remote_named` | Declarative remote children on static supervisors (12.7) |
+| `DynamicSupervisor::start_child_remote` | Runtime remote child spawn (12.3) |
 
 ```rust
 use spawned_concurrency::{Node, RemoteActorRef, remote_message};
@@ -949,3 +1021,5 @@ let node = Node::builder()
 let remote = RemoteActorRef::<Ping>::remote(target_address, node.router());
 let pong = remote.request_async(Ping { n: 1 }).await?;
 ```
+
+See [CLUSTERING.md](CLUSTERING.md), [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md), and [`cluster_supervised_workers`](../examples/cluster_supervised_workers) for supervised remote worker patterns.

@@ -1,8 +1,8 @@
 # Spawned Roadmap
 
-**Last updated:** after Phase 10.1 (federated registry).
+**Last updated:** after Phase 12.7 (static supervisor remote placement). See [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md) for capability matrix and path to v1.0.
 
-For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For framework comparison research, see [design/FRAMEWORK_COMPARISON.md](design/FRAMEWORK_COMPARISON.md).
+For API details, see the [API Guide](API-GUIDE.md). For supervision patterns, see [Supervision Guide](SUPERVISION.md). For production readiness and the path to v1.0, see [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md).
 
 ## Phase 1: Core Actor Framework — ✅ v0.4
 
@@ -390,11 +390,44 @@ Deferred to **12.6+**: cross-node link (12.6), static supervisor remote placemen
 - Named-spec inbound spawn dispatches onto the tasks runtime (same as workers)
 - Integration tests: `supervision_static_remote_named_two_node.rs`, `supervision_static_remote_worker_two_node.rs`, `supervision_static_remote_batch_two_node.rs`
 
-Deferred to **12.8**: example app + API-GUIDE docs.
+See [Production path](#production-path) and [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md) for docs, example, and v1.0 checklist.
 
 | Phase | Focus |
 |-------|--------|
 | **12.7** | Static supervisor remote placement — shipped |
+
+### 12.8. Production readiness docs + example — shipped
+
+- [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md) — capability matrix, app patterns, sharp edges, tiers, v1.0 path (Phases 13–16)
+- ROADMAP [Production path](#production-path) summary section
+- API-GUIDE remote child specs; SUPERVISION remote children section
+- [`cluster_supervised_workers`](../examples/cluster_supervised_workers) — two-node static supervisor demo
+
+| Phase | Focus |
+|-------|--------|
+| **12.8** | Production readiness docs + clustered supervisor example — shipped |
+
+## Production path
+
+Canonical reference: **[PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)** — capability matrix, app patterns, sharp edges, and v1.0 checklist.
+
+### Production tiers
+
+| Tier | Meaning |
+|------|---------|
+| **Tier 1** | Clustered supervision MVP — docs + example + caveats documented |
+| **Tier 2** | Operable production — Tier 1 + observability, hardened remote shutdown, multi-node tests (**v1.0 target**) |
+| **Tier 3** | OTP-grade — group monitors, dynamic supervisor strategies, persistence (post-1.0) |
+
+### Phases 12.8–16 (path to v1.0)
+
+| Phase | Focus | Status |
+|-------|--------|--------|
+| **12.8** | Docs + `cluster_supervised_workers` example; API-GUIDE remote child specs | Shipped |
+| **13** | Operational hardening — cross-node shutdown wait, batch terminate, spawn retry | Planned |
+| **14** | Observability — supervision tracing, metrics hooks, node readiness | Planned |
+| **15** | Production validation — 3+ node tests, partition/reconnect, libp2p parity | Planned |
+| **16** | v1.0 stabilization — semver, CHANGELOG, security posture, doc sweep | Planned |
 
 ## Future Considerations
 

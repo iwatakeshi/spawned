@@ -369,5 +369,6 @@ Integration tests: `concurrency/tests/supervision_static_remote_*_two_node.rs`.
 | **12.5** | Cross-node monitor propagation (this document) |
 | **12.6** | Cross-node link propagation (this document) |
 | **12.7** | Static supervisor remote placement (this document) |
+| **12.8** | Production readiness docs + example (see [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)) |
 
-See [ROADMAP.md](ROADMAP.md) for full detail.
+See [ROADMAP.md](ROADMAP.md) for full detail. For production readiness and the path to v1.0, see [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md).
