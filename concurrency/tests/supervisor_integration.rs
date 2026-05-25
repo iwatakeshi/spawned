@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use spawned_concurrency::{
-    shutdown_child_async, shutdown_child_blocking, ChildHandle, ExitReason, RestartIntensity,
-    RestartType, ShutdownType, SupervisorStrategy,
+    install_supervision_recorder, shutdown_child_async, shutdown_child_blocking, ChildHandle,
+    ExitReason, RestartIntensity, RestartType, ShutdownType, SupervisionRecorder,
+    SupervisorStrategy,
 };
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,34 @@ fn wait_until_all(counts: &StartCounts, ids: &[&str], at_least: u32, timeout: Du
         std::thread::sleep(Duration::from_millis(10));
     }
     ids.iter().all(|id| get_count(counts, id) >= at_least)
+}
+
+struct CountingRecorder {
+    restarts: Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl SupervisionRecorder for CountingRecorder {
+    fn inc_restart(
+        &self,
+        _supervisor: spawned_concurrency::ActorId,
+        _child_id: &str,
+        _remote: bool,
+    ) {
+        self.restarts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn inc_meltdown(&self, _supervisor: spawned_concurrency::ActorId) {}
+
+    fn record_remote_spawn(
+        &self,
+        _placement: &spawned_concurrency::NodeId,
+        _duration: Duration,
+        _ok: bool,
+    ) {
+    }
+
+    fn inc_remote_spawn_retry(&self, _placement: &spawned_concurrency::NodeId) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +376,36 @@ mod tasks {
 
             sup.child_handle().stop();
             sup.join().await;
+        });
+    }
+
+    #[test]
+    fn one_for_one_restart_increments_supervision_recorder() {
+        run(async {
+            let counts: StartCounts = Arc::new(Mutex::new(HashMap::new()));
+            let restart_counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            install_supervision_recorder(Arc::new(CountingRecorder {
+                restarts: restart_counter.clone(),
+            }));
+
+            let worker_id = "recorder_worker";
+            let _sup = Supervisor::builder()
+                .strategy(SupervisorStrategy::OneForOne)
+                .child(ChildSpec::worker(
+                    worker_id,
+                    worker(worker_id, counts.clone(), vec![0]),
+                    RestartType::Permanent,
+                ))
+                .start();
+
+            assert!(
+                wait_until(&counts, worker_id, 2, Duration::from_secs(2)),
+                "worker should restart after panic"
+            );
+            assert!(
+                restart_counter.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+                "supervision recorder should count restart"
+            );
         });
     }
 

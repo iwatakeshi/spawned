@@ -3,6 +3,7 @@
 use crate::child_handle::ActorId;
 use crate::child_spec::{ChildSpec as InnerChildSpec, RestartType, ShutdownType};
 use crate::cluster::remote_spawn::{self, RemoteSpawnError};
+use crate::observability::remote_spawn_retry;
 use spawned_address::{ActorAddress, NodeId};
 use spawned_cluster::{RemoteSpawnSpec, RemoteSpecOverrides, WireRestartType};
 use std::collections::HashMap;
@@ -189,6 +190,11 @@ pub async fn request_spawn_async(
 }
 
 /// Issue a correlated spawn RPC with transport retries (tasks runtime).
+#[tracing::instrument(
+    skip(placement, parent, spec, policy),
+    fields(placement = %placement, link),
+    level = "debug"
+)]
 pub async fn request_spawn_with_retry_async(
     placement: &NodeId,
     parent: ActorAddress,
@@ -203,14 +209,7 @@ pub async fn request_spawn_with_retry_async(
             Ok(address) => return Ok(address),
             Err(err) if is_transport_error(&err) && attempt < policy.max_attempts => {
                 let delay = transport_retry_delay(attempt, policy);
-                tracing::warn!(
-                    placement = %placement,
-                    attempt,
-                    max_attempts = policy.max_attempts,
-                    ?delay,
-                    error = %err,
-                    "remote spawn transport error — retrying"
-                );
+                remote_spawn_retry(placement, attempt, policy.max_attempts);
                 spawned_rt::tasks::sleep(delay).await;
             }
             Err(err) => return Err(err),
@@ -243,14 +242,7 @@ pub fn request_spawn_with_retry_blocking(
             Ok(address) => return Ok(address),
             Err(err) if is_transport_error(&err) && attempt < policy.max_attempts => {
                 let delay = transport_retry_delay(attempt, policy);
-                tracing::warn!(
-                    placement = %placement,
-                    attempt,
-                    max_attempts = policy.max_attempts,
-                    ?delay,
-                    error = %err,
-                    "remote spawn transport error — retrying"
-                );
+                remote_spawn_retry(placement, attempt, policy.max_attempts);
                 std::thread::sleep(delay);
             }
             Err(err) => return Err(err),
@@ -282,6 +274,11 @@ pub fn shutdown_remote_and_wait_blocking(
 }
 
 /// Signal a remote child and wait until ChildExit completes the wait registry.
+#[tracing::instrument(
+    skip(remote, shutdown),
+    fields(child = %remote.address(), ?shutdown),
+    level = "debug"
+)]
 pub async fn shutdown_remote_and_wait(
     remote: &remote_spawn::RemoteChildHandle,
     shutdown: ShutdownType,

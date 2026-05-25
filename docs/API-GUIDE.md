@@ -18,6 +18,7 @@ Complete reference for the spawned actor framework. For a quick introduction, se
 - [Monitors](#monitors)
 - [Links and trap\_exit](#links-and-trap_exit)
 - [Child Specs and Supervisor](#child-specs-and-supervisor)
+- [Observability](#observability)
 - [Response\<T\>](#responset)
 - [Message Trait](#message-trait)
 - [Error Handling](#error-handling)
@@ -934,6 +935,71 @@ Supervisors are built in — see [Child Specs and Supervisor](#child-specs-and-s
 
 - `send()` / `request()` return `Err(ActorStopped)` when the actor has stopped
 - All lifecycle phases are wrapped in `catch_unwind`
+
+---
+
+## Observability
+
+Phase 14 adds structured supervision tracing, pluggable metric hooks, and cluster readiness probes.
+
+### Supervision tracing
+
+Filter with `RUST_LOG`:
+
+```text
+RUST_LOG=spawned.supervision=info,spawned.cluster=debug
+```
+
+| Target | Events |
+|--------|--------|
+| `spawned.supervision` | `child_exit`, `restart_scheduled`, `batch_terminate`, `meltdown`, `remote_spawn`, `remote_shutdown_wait` |
+| `spawned.cluster` | `broker_spawn`, `broker_child_exit`, `broker_signal` |
+
+Events use stable field names (`supervisor`, `child_id`, `placement`, `outcome`, …) for log aggregation.
+
+### SupervisionRecorder
+
+Install a process-global hook for counters and latency recording (no built-in Prometheus dependency):
+
+```rust
+use std::sync::Arc;
+use spawned_concurrency::{install_supervision_recorder, SupervisionRecorder, ActorId};
+use spawned_address::NodeId;
+use std::time::Duration;
+
+struct MyRecorder;
+impl SupervisionRecorder for MyRecorder {
+    fn inc_restart(&self, _sup: ActorId, _child: &str, _remote: bool) { /* counter */ }
+    fn inc_meltdown(&self, _sup: ActorId) { /* counter */ }
+    fn record_remote_spawn(&self, _node: &NodeId, _dur: Duration, _ok: bool) { /* histogram */ }
+    fn inc_remote_spawn_retry(&self, _node: &NodeId) { /* counter */ }
+}
+
+let _ = install_supervision_recorder(Arc::new(MyRecorder));
+```
+
+Default is a no-op recorder when unset.
+
+### Node readiness (feature `cluster`)
+
+```rust
+let node = Node::builder().name("app@host").listen(addr).build()?;
+let readiness = node.readiness();
+assert!(readiness.broker_alive);
+assert!(node.is_ready()); // broker alive when supervision enabled; listener when listen configured
+```
+
+`Application::readiness()` / `Application::is_ready()` delegate to the optional cluster node (local-only apps report ready).
+
+**Health endpoint pattern (Axum):**
+
+```rust
+async fn health(State(app): State<Arc<Application>>) -> StatusCode {
+    if app.is_ready() { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE }
+}
+```
+
+See also [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md) and [SUPERVISION.md](SUPERVISION.md).
 
 ---
 

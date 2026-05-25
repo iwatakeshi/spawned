@@ -40,6 +40,7 @@ pub mod link;
 pub(crate) mod mailbox;
 pub mod message;
 pub mod monitor;
+pub mod observability;
 pub mod pg;
 pub mod pool;
 pub mod registry;
@@ -66,6 +67,10 @@ pub use error::{ActorError, ExitReason};
 pub use link::Exit;
 pub use mailbox::{BackpressureMode, MailboxConfig};
 pub use monitor::{Down, MonitorRef};
+pub use observability::{
+    install_supervision_recorder, supervision_recorder, SupervisionRecorder, TARGET_CLUSTER,
+    TARGET_SUPERVISION,
+};
 pub use pg::{PgCallReport, PgError, PgSendReport, DEFAULT_SCOPE, member_addresses, member_addresses_scoped};
 pub use pool::{PoolDispatcher, PoolError, PoolStrategy};
 pub use response::Response;
@@ -85,7 +90,7 @@ pub use cluster::{
     register_supervision_actor, register_supervision_monitor_owner,
     unregister_named, tasks_wire_dispatch,
     threads_wire_dispatch, AsyncTransport, ClusterRouter, ControlPlaneHooks, InboundDispatch,
-    NamedRegistryError, Node, NodeBuilder, NodeError, PgEvent, PgMemberEntry, Placement,
+    NamedRegistryError, Node, NodeBuilder, NodeError, NodeReadiness, PgEvent, PgMemberEntry, Placement,
     RemoteActorRef, RemoteChildHandle, RemoteRequest, RemoteSpawnError, TcpAsyncTransport,
     TcpClusterListener, TcpTransport, Transport, TransportError, UnavailableTransport, WireReply,
     PROTOCOL_VERSION,

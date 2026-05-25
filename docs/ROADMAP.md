@@ -420,6 +420,18 @@ See [Production path](#production-path) and [PRODUCTION_READINESS.md](PRODUCTION
 |-------|--------|
 | **13** | Operational hardening — remote shutdown wait, spawn retry, protocol stability docs — shipped |
 
+### 14. Observability — shipped
+
+- `observability` module — structured tracing helpers (`TARGET_SUPERVISION`, `TARGET_CLUSTER`)
+- `SupervisionRecorder` trait + `install_supervision_recorder` (no-op default; bridge to Prometheus/OTel externally)
+- Instrumentation on static/dynamic supervisors, supervision broker, remote spawn/shutdown paths
+- `NodeReadiness` + `Node::readiness()` / `is_ready()`; `Application::readiness()` when cluster enabled
+- Tests: `observability` unit tests, `supervisor_integration` recorder test, `node_readiness` integration test
+
+| Phase | Focus |
+|-------|--------|
+| **14** | Observability — supervision tracing, metrics hooks, node readiness — shipped |
+
 ## Production path
 
 Canonical reference: **[PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)** — capability matrix, app patterns, sharp edges, and v1.0 checklist.
@@ -438,7 +450,7 @@ Canonical reference: **[PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)** — 
 |-------|--------|--------|
 | **12.8** | Docs + `cluster_supervised_workers` example; API-GUIDE remote child specs | Shipped |
 | **13** | Operational hardening — cross-node shutdown wait, batch terminate, spawn retry | Shipped |
-| **14** | Observability — supervision tracing, metrics hooks, node readiness | Planned |
+| **14** | Observability — supervision tracing, metrics hooks, node readiness | Shipped |
 | **15** | Production validation — 3+ node tests, partition/reconnect, libp2p parity | Planned |
 | **16** | v1.0 stabilization — semver, CHANGELOG, security posture, doc sweep | Planned |
 
@@ -453,7 +465,7 @@ Canonical reference: **[PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)** — 
 | Backoff strategies | ✅ Shipped in Phase 9.1 (`RestartBackoff` on `ChildSpec`) |
 | Persistence / event sourcing | Akka Persistence pattern |
 | Clustering / distribution | Phase 8–11 shipped — see [CLUSTERING.md](CLUSTERING.md) |
-| Built-in observability | Message latency (mailbox depth shipped in 6c) |
+| Built-in observability | Supervision tracing + recorder hooks (Phase 14); per-handler latency still deferred |
 | Custom runtime | Purpose-built actor runtime |
 
 ## What's still missing for OTP parity

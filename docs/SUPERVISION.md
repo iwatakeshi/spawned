@@ -260,6 +260,16 @@ Actors auto-leave all groups on exit. See [API Guide — Process Groups](API-GUI
 
 Supervisors use `shutdown()` / `kill()` via [`shutdown_child_async`](../concurrency/src/child_spec.rs) / `shutdown_child_blocking`.
 
+### Debugging restarts (Phase 14)
+
+Supervisors emit structured tracing events on child exit, restart scheduling, batch terminate, and meltdown. Enable with:
+
+```text
+RUST_LOG=spawned.supervision=info
+```
+
+For aggregate metrics, install a [`SupervisionRecorder`](API-GUIDE.md#supervisionrecorder) hook. See [API-GUIDE — Observability](API-GUIDE.md#observability).
+
 ## Links, monitors, and supervision
 
 | Mechanism | Direction | Supervisor use |

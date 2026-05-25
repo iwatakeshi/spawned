@@ -4,6 +4,7 @@ use crate::child_handle::{ActorId, ChildHandle};
 use crate::cluster::remote_spawn;
 use crate::cluster::supervision_exit::{child_exit_envelope, wire_to_exit_reason};
 use crate::cluster::supervision_remote::complete_remote_shutdown_wait;
+use crate::observability::{broker_child_exit, broker_signal, broker_spawn};
 use crate::cluster::supervision_monitor::{self, SendDownFn};
 use crate::error::ExitReason;
 use crate::link::Exit;
@@ -130,6 +131,15 @@ impl SupervisionBrokerInner {
         &self.local
     }
 
+    /// Returns true when the broker actor has registered its handle and is alive.
+    pub fn broker_alive(&self) -> bool {
+        self.broker_handle
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .is_some_and(|handle| handle.is_alive())
+    }
+
     pub(crate) fn set_broker_handle(&self, handle: ChildHandle) {
         *self.broker_handle.write().unwrap_or_else(|p| p.into_inner()) = Some(handle);
     }
@@ -236,6 +246,7 @@ impl SupervisionBrokerInner {
         spec: spawned_cluster::RemoteSpawnSpec,
         link: bool,
     ) -> Result<Option<SupervisionEnvelope>, TransportError> {
+        broker_spawn(correlation_id, &parent.to_string(), &placement);
         if placement != self.local {
             return Ok(Some(SupervisionEnvelope {
                 correlation_id,
@@ -311,9 +322,11 @@ impl SupervisionBrokerInner {
                 ))
             })?;
         complete_remote_shutdown_wait(child.actor_id);
+        let exit_reason = wire_to_exit_reason(reason);
+        broker_child_exit(&child.to_string(), &parent.to_string(), &exit_reason.to_string());
         let exit = Exit {
             from: child,
-            reason: wire_to_exit_reason(reason),
+            reason: exit_reason,
         };
         (handle.send_exit_fn())(exit).map_err(|e| TransportError::Protocol(e.to_string()))?;
         Ok(())
@@ -593,9 +606,18 @@ impl SupervisionBrokerInner {
                 ))
             })?;
         match signal {
-            SupervisionSignal::Stop => handle.stop(),
-            SupervisionSignal::Shutdown => handle.shutdown(),
-            SupervisionSignal::Kill => handle.kill(),
+            SupervisionSignal::Stop => {
+                broker_signal(&target.to_string(), "stop");
+                handle.stop()
+            }
+            SupervisionSignal::Shutdown => {
+                broker_signal(&target.to_string(), "shutdown");
+                handle.shutdown()
+            }
+            SupervisionSignal::Kill => {
+                broker_signal(&target.to_string(), "kill");
+                handle.kill()
+            }
         }
         Ok(())
     }
@@ -716,5 +738,25 @@ mod tests {
             actor.child_handle().wait_exit_async().await,
             crate::ExitReason::Shutdown
         );
+    }
+
+    #[tokio::test]
+    async fn broker_alive_reflects_broker_actor() {
+        let local = NodeId::new("alive@127.0.0.1");
+        unsafe {
+            std::env::set_var("SPAWNED_NODE_NAME", local.as_str());
+        }
+        spawned_address::set_local_node_for_test(local.clone());
+        let (broker, inner) = start_supervision_broker(local);
+        for _ in 0..50 {
+            if inner.broker_alive() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(inner.broker_alive());
+        broker.child_handle().stop();
+        broker.join().await;
+        assert!(!inner.broker_alive());
     }
 }

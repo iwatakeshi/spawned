@@ -9,7 +9,7 @@ use crate::shutdown_signal::{register_shutdown_on_signal, spawn_shutdown_signal_
 use crate::shutdown_signal::SignalGuard;
 
 #[cfg(feature = "cluster")]
-use crate::cluster::{Node, NodeBuilder, NodeError};
+use crate::cluster::{Node, NodeBuilder, NodeError, NodeReadiness};
 
 /// Errors starting an [`Application`].
 #[derive(Debug, thiserror::Error)]
@@ -72,6 +72,18 @@ impl Application {
     #[cfg(feature = "cluster")]
     pub fn node(&self) -> Option<&Node> {
         self.node.as_ref()
+    }
+
+    /// Readiness snapshot when a cluster node is configured.
+    #[cfg(feature = "cluster")]
+    pub fn readiness(&self) -> Option<NodeReadiness> {
+        self.node.as_ref().map(Node::readiness)
+    }
+
+    /// Returns true when the application (and optional cluster node) is ready to serve.
+    #[cfg(feature = "cluster")]
+    pub fn is_ready(&self) -> bool {
+        self.node.as_ref().is_none_or(|node| node.is_ready())
     }
 
     /// Wait until all root handles have exited (tasks runtime).

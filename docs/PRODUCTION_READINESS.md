@@ -1,6 +1,6 @@
 # Production Readiness
 
-**Last updated:** after Phase 13 (operational hardening).
+**Last updated:** after Phase 14 (observability).
 
 Spawned is a Rust actor framework inspired by Erlang OTP. This document summarizes **what you can build today**, **known limitations**, and the **path to v1.0 production completion**.
 
@@ -83,6 +83,9 @@ flowchart LR
 | Static remote placement | Shipped (12.7) | `ChildSpec::remote_named`, `remote_worker` |
 | Remote shutdown wait | Shipped (13) | `shutdown_remote_and_wait` in terminate/stopped; ChildExit completes wait |
 | Remote spawn retry | Shipped (13) | Transport errors retry on restart (3 attempts, exp backoff) |
+| Supervision tracing | Shipped (14) | Structured `spawned.supervision` / `spawned.cluster` events |
+| Supervision metrics hooks | Shipped (14) | `SupervisionRecorder` trait + `install_supervision_recorder` |
+| Node readiness | Shipped (14) | `Node::readiness()` / `is_ready()` for orchestrator probes |
 
 **Examples:** [`cluster_ping_pong`](../examples/cluster_ping_pong), [`cluster_supervised_workers`](../examples/cluster_supervised_workers), [`http_workers`](../examples/http_workers)
 
@@ -129,7 +132,7 @@ flowchart LR
 - Library version **v0.5**; cluster wire protocol **v3**
 - Integration tests are mostly **single-process two-node**
 - No built-in cluster **TLS/mTLS/auth** — bring your own network security
-- Observability: mailbox depth yes; supervision metrics / latency tracing thin
+- No built-in Prometheus/OTel exporters — bridge `SupervisionRecorder` to your stack
 
 ### Operational tips
 
@@ -172,13 +175,13 @@ flowchart LR
 
 **Acceptance:** Remote `stopped()` / `terminate_children` block until `ChildExit`; batch test passes with strict timing; transport errors retry before child removal.
 
-### Phase 14 — Observability
+### Phase 14 — Observability — shipped
 
-| Item | Rationale | Approach |
-|------|-----------|----------|
-| Supervision event tracing | Debug restarts/meltdown/remotes | `tracing` spans on supervisor + broker |
-| Metrics hooks | Restart counts, remote spawn latency | Optional `metrics` feature or tracing-only MVP |
-| Health / readiness | Orchestrator liveness | `Node` broker-ready check |
+- [x] Structured supervision tracing (`spawned.supervision`, `spawned.cluster` targets)
+- [x] `SupervisionRecorder` hooks (restart, meltdown, remote spawn, retry)
+- [x] `NodeReadiness` + `Node::is_ready()` / `Application::is_ready()`
+
+**Acceptance:** `RUST_LOG=spawned.supervision=info` shows restart/meltdown events; custom recorder receives callbacks; cluster node with listen reports ready after broker starts.
 
 ### Phase 15 — Production validation
 

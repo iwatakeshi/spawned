@@ -5,6 +5,7 @@
 
 mod named_registry;
 mod node;
+mod node_readiness;
 mod pg_sync;
 mod registry_sync;
 mod remote_actor_ref;
@@ -22,6 +23,7 @@ pub use named_registry::{
     apply_remote_event, local_snapshot, lookup_address, lookup_handle, register_named,
     unregister_named, NamedRegistryError,
 };
+pub use node_readiness::NodeReadiness;
 pub use node::{Node, NodeBuilder, NodeError};
 pub use pg_sync::install_pg_sync;
 pub use registry_sync::install_registry_sync;

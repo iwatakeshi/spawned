@@ -10,6 +10,7 @@ use crate::shutdown_signal::SignalGuard;
 use crate::RemoteMessage;
 use spawned_address::{local_node, set_local_node_for_test, ActorAddress, NodeId};
 use super::{start_supervision_broker, SupervisionBroker, SupervisionBrokerInner};
+use super::node_readiness::NodeReadiness;
 use spawned_cluster::{
     AddressDispatch, AsyncTransport, ClusterRouter, ControlPlaneHooks, SupervisionHooks,
     TcpAsyncTransport, TcpClusterListener, TcpTransport, Transport, TransportError,
@@ -68,6 +69,8 @@ pub struct Node {
     supervision: Option<Arc<SupervisionBrokerInner>>,
     _supervision_broker: Option<crate::tasks::ActorRef<SupervisionBroker>>,
     _signal_guards: Vec<SignalGuard>,
+    listen_configured: bool,
+    peers_configured: usize,
 }
 
 impl Node {
@@ -149,6 +152,35 @@ impl Node {
     /// Gracefully stop the cluster listener.
     pub fn shutdown(self) {
         drop(self);
+    }
+
+    /// Readiness snapshot for orchestrator health probes.
+    pub fn readiness(&self) -> NodeReadiness {
+        NodeReadiness {
+            router_installed: true,
+            listener_active: self.listener_active(),
+            supervision_enabled: self.supervision.is_some(),
+            broker_alive: self
+                .supervision
+                .as_ref()
+                .is_some_and(|inner| inner.broker_alive()),
+            peers_configured: self.peers_configured,
+            listen_configured: self.listen_configured,
+        }
+    }
+
+    /// Returns true when this node meets readiness requirements for its configuration.
+    pub fn is_ready(&self) -> bool {
+        self.readiness().is_ready()
+    }
+
+    fn listener_active(&self) -> bool {
+        match &self.backend {
+            ClusterBackend::Tcp { listener, .. } => listener.is_some(),
+            #[cfg(feature = "cluster-libp2p")]
+            ClusterBackend::Libp2p(cluster) => !cluster.listen_addrs().is_empty(),
+            ClusterBackend::None => false,
+        }
     }
 
     /// Exchange registry snapshots with all configured peers.
@@ -298,6 +330,16 @@ impl NodeBuilder {
         }
         let dispatch = Arc::new(AddressDispatch::new());
 
+        #[cfg(feature = "cluster-libp2p")]
+        let (listen_configured, peers_configured) = match self.transport {
+            TransportKind::Libp2p => (self.listen_libp2p.is_some(), self.libp2p_peers.len()),
+            TransportKind::Tcp => (self.listen.is_some(), self.peers.len()),
+        };
+        #[cfg(not(feature = "cluster-libp2p"))]
+        let listen_configured = self.listen.is_some();
+        #[cfg(not(feature = "cluster-libp2p"))]
+        let peers_configured = self.peers.len();
+
         let cluster_active = {
             #[cfg(feature = "cluster-libp2p")]
             {
@@ -359,6 +401,8 @@ impl NodeBuilder {
                 federated,
                 supervision_broker,
                 supervision_inner,
+                listen_configured,
+                peers_configured,
             );
         }
 
@@ -443,6 +487,8 @@ impl NodeBuilder {
             supervision: supervision_inner,
             _supervision_broker: supervision_broker,
             _signal_guards,
+            listen_configured,
+            peers_configured,
         })
     }
 
@@ -455,6 +501,8 @@ impl NodeBuilder {
         federated: bool,
         supervision_broker: Option<crate::tasks::ActorRef<SupervisionBroker>>,
         supervision_inner: Option<Arc<SupervisionBrokerInner>>,
+        listen_configured: bool,
+        peers_configured: usize,
     ) -> Result<Node, NodeError> {
         let listen = match self.listen_libp2p {
             Some(addr) => addr,
@@ -546,6 +594,8 @@ impl NodeBuilder {
             supervision: supervision_inner,
             _supervision_broker: supervision_broker,
             _signal_guards,
+            listen_configured,
+            peers_configured,
         })
     }
 }

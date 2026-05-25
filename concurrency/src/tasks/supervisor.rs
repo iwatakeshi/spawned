@@ -7,6 +7,7 @@ use crate::child_spec::{
     ShutdownType,
 };
 use crate::link::Exit;
+use crate::observability::{self, meltdown as obs_meltdown, restart_scheduled};
 use crate::supervisor::{
     ChildHandleSlot, ChildPolicy, SupervisorAction, SupervisorLogic, SupervisorStrategy,
 };
@@ -124,16 +125,23 @@ impl Supervisor {
             return;
         };
         let parent = ctx.actor_address();
-        let address = match request_spawn_with_retry_async(
+        let started = Instant::now();
+        let spawn_result = request_spawn_with_retry_async(
             &placement,
             parent.clone(),
             wire_spec.clone(),
             true,
             RemoteSpawnRetryPolicy::default(),
         )
-        .await {
-            Ok(address) => address,
+        .await;
+        let duration = started.elapsed();
+        let address = match spawn_result {
+            Ok(address) => {
+                observability::remote_spawn(&placement, &spec.id, duration, true);
+                address
+            }
             Err(err) => {
+                observability::remote_spawn(&placement, &spec.id, duration, false);
                 tracing::error!(child_id = %spec.id, error = %err, "remote child start failed");
                 return;
             }
@@ -173,17 +181,23 @@ impl Supervisor {
         self.remote_actor_to_id.retain(|_, id| id != child_id);
 
         let parent = ctx.actor_address();
-        let address = match request_spawn_with_retry_async(
+        let started = Instant::now();
+        let spawn_result = request_spawn_with_retry_async(
             &meta.placement,
             parent.clone(),
             meta.spec.clone(),
             meta.link,
             RemoteSpawnRetryPolicy::default(),
         )
-        .await
-        {
-            Ok(address) => address,
+        .await;
+        let duration = started.elapsed();
+        let address = match spawn_result {
+            Ok(address) => {
+                observability::remote_spawn(&meta.placement, child_id, duration, true);
+                address
+            }
             Err(err) => {
+                observability::remote_spawn(&meta.placement, child_id, duration, false);
                 tracing::error!(child_id, error = %err, "remote child restart failed");
                 self.logic.remove_child_by_id(child_id);
                 self.remote_spawn_meta.remove(child_id);
@@ -219,7 +233,8 @@ impl Supervisor {
         self.handles.insert(child_id.to_string(), handle);
     }
 
-    async fn terminate_children(&mut self, ids: &[String]) {
+    async fn terminate_children(&mut self, ids: &[String], supervisor: ActorId) {
+        observability::batch_terminate(supervisor, self.logic.strategy(), ids);
         for id in ids {
             let shutdown = self
                 .specs
@@ -233,6 +248,9 @@ impl Supervisor {
                     let actor_id = remote.address().actor_id;
                     if let Err(err) = shutdown_remote_and_wait(remote, shutdown).await {
                         tracing::warn!(child_id = %id, error = %err, "remote child shutdown wait failed");
+                        observability::remote_shutdown_wait(id, "err", false);
+                    } else {
+                        observability::remote_shutdown_wait(id, "ok", true);
                     }
                     self.logic.mark_child_dead(actor_id);
                 }
@@ -256,6 +274,11 @@ impl Supervisor {
     async fn restart_child_with_backoff(&mut self, ctx: &Context<Self>, child_id: &str) {
         let backoff = self.backoff_for(child_id);
         let delay = self.logic.backoff_delay(child_id, backoff);
+        #[cfg(feature = "cluster")]
+        let remote = self.remote_spawn_meta.contains_key(child_id);
+        #[cfg(not(feature = "cluster"))]
+        let remote = false;
+        restart_scheduled(ctx.id(), child_id, delay, remote);
         if !delay.is_zero() {
             spawned_rt::tasks::sleep(delay).await;
         }
@@ -303,12 +326,24 @@ impl Supervisor {
             .on_child_exit(exit.from.actor_id, &exit.reason, Instant::now())
         {
             SupervisorAction::Ignore => {}
-            SupervisorAction::RestartOne(id) => self.restart_child_with_backoff(ctx, &id).await,
+            SupervisorAction::RestartOne(id) => {
+                if let Some(child_id) = self.logic.child_id_by_actor_any(exit.from.actor_id) {
+                    observability::child_exit(ctx.id(), child_id, exit.from.actor_id, &exit.reason);
+                }
+                self.restart_child_with_backoff(ctx, &id).await;
+            }
             SupervisorAction::TerminateBatch(ids) => {
-                self.terminate_children(&ids).await;
+                if let Some(child_id) = self.logic.child_id_by_actor_any(exit.from.actor_id) {
+                    observability::child_exit(ctx.id(), child_id, exit.from.actor_id, &exit.reason);
+                }
+                self.terminate_children(&ids, ctx.id()).await;
                 self.maybe_complete_batch_restart(ctx).await;
             }
             SupervisorAction::Meltdown => {
+                if let Some(child_id) = self.logic.child_id_by_actor_any(exit.from.actor_id) {
+                    observability::child_exit(ctx.id(), child_id, exit.from.actor_id, &exit.reason);
+                }
+                obs_meltdown(ctx.id());
                 tracing::error!(
                     supervisor = ?ctx.id(),
                     "supervisor exceeded restart intensity — shutting down"

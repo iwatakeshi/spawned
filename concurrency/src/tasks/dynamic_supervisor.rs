@@ -8,6 +8,7 @@ use crate::child_spec::{
 };
 use crate::dynamic_supervisor::{instance_id, DynamicChildInfo, DynamicSupervisorError};
 use crate::link::Exit;
+use crate::observability::{self, restart_scheduled};
 use crate::registry;
 use crate::response::Response;
 use crate::supervisor::{
@@ -282,15 +283,21 @@ impl DynamicSupervisor {
         let parent = ctx.actor_address();
         let spec_for_rpc = spec.clone();
         let placement_for_rpc = placement.clone();
-        let address = request_spawn_with_retry_async(
+        let started = Instant::now();
+        let spawn_result = request_spawn_with_retry_async(
             &placement_for_rpc,
             parent,
             spec_for_rpc,
             link,
             RemoteSpawnRetryPolicy::default(),
         )
-        .await
-            .map_err(|e| DynamicSupervisorError::RemoteSpawn(e.to_string()))?;
+        .await;
+        let duration = started.elapsed();
+        let address = spawn_result.map_err(|e| {
+            observability::remote_spawn(&placement_for_rpc, &child_id, duration, false);
+            DynamicSupervisorError::RemoteSpawn(e.to_string())
+        })?;
+        observability::remote_spawn(&placement_for_rpc, &child_id, duration, true);
 
         let remote = RemoteChildHandle::new(address.clone(), ctx.actor_address());
         let start_index = self.logic.next_start_index();
@@ -331,16 +338,23 @@ impl DynamicSupervisor {
         let placement = meta.placement.clone();
         let spec = meta.spec.clone();
         let link = meta.link;
-        let address = match request_spawn_with_retry_async(
+        let started = Instant::now();
+        let spawn_result = request_spawn_with_retry_async(
             &placement,
             parent,
             spec,
             link,
             RemoteSpawnRetryPolicy::default(),
         )
-        .await {
-            Ok(address) => address,
+        .await;
+        let duration = started.elapsed();
+        let address = match spawn_result {
+            Ok(address) => {
+                observability::remote_spawn(&placement, child_id, duration, true);
+                address
+            }
             Err(err) => {
+                observability::remote_spawn(&placement, child_id, duration, false);
                 tracing::error!(child_id, error = %err, "remote child restart failed");
                 self.cleanup_child(child_id);
                 return;
@@ -447,6 +461,11 @@ impl DynamicSupervisor {
     async fn restart_child_with_backoff(&mut self, ctx: &Context<Self>, child_id: &str) {
         let backoff = self.backoff_for(child_id);
         let delay = self.logic.backoff_delay(child_id, backoff);
+        #[cfg(feature = "cluster")]
+        let remote = self.remote_spawn_meta.contains_key(child_id);
+        #[cfg(not(feature = "cluster"))]
+        let remote = false;
+        restart_scheduled(ctx.id(), child_id, delay, remote);
         if !delay.is_zero() {
             spawned_rt::tasks::sleep(delay).await;
         }
@@ -469,10 +488,16 @@ impl DynamicSupervisor {
                     .child_id_by_actor_any(exit.from.actor_id)
                     .map(str::to_string)
                 {
+                    observability::child_exit(ctx.id(), &child_id, exit.from.actor_id, &exit.reason);
                     self.cleanup_child(&child_id);
                 }
             }
-            SupervisorAction::RestartOne(id) => self.restart_child_with_backoff(ctx, &id).await,
+            SupervisorAction::RestartOne(id) => {
+                if let Some(child_id) = self.logic.child_id_by_actor_any(exit.from.actor_id) {
+                    observability::child_exit(ctx.id(), child_id, exit.from.actor_id, &exit.reason);
+                }
+                self.restart_child_with_backoff(ctx, &id).await;
+            }
             SupervisorAction::TerminateBatch(_) | SupervisorAction::Meltdown => {
                 tracing::error!(
                     supervisor = ?ctx.id(),
